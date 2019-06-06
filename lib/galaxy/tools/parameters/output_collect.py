@@ -20,7 +20,7 @@ from galaxy.model.store.discover import (
     RegexCollectedDatasetMatch,
     UNSET,
 )
-from galaxy.tools.parser.output_collection_def import (
+from galaxy.tool_util.parser.output_collection_def import (
     DEFAULT_DATASET_COLLECTOR_DESCRIPTION,
     INPUT_DBKEY_TOKEN,
     ToolProvidedMetadataDatasetCollection,
@@ -316,6 +316,7 @@ def collect_primary_datasets(job_context, output, input_ext):
                 extra_files_path = new_primary_datasets_attributes.get('extra_files', None)
                 if extra_files_path:
                     extra_files_path_joined = os.path.join(job_working_directory, extra_files_path)
+                    primary_data.dataset.create_extra_files_path()
                     for root, dirs, files in os.walk(extra_files_path_joined):
                         extra_dir = os.path.join(primary_data.extra_files_path, root.replace(extra_files_path_joined, '', 1).lstrip(os.path.sep))
                         extra_dir = os.path.normpath(extra_dir)
@@ -417,7 +418,7 @@ class DatasetCollector(object):
     def __init__(self, dataset_collection_description):
         self.discover_via = dataset_collection_description.discover_via
         # dataset_collection_description is an abstract description
-        # built from the tool parsing module - see galaxy.tools.parser.output_colleciton_def
+        # built from the tool parsing module - see galaxy.tool_util.parser.output_colleciton_def
         self.sort_key = dataset_collection_description.sort_key
         self.sort_reverse = dataset_collection_description.sort_reverse
         self.sort_comp = dataset_collection_description.sort_comp

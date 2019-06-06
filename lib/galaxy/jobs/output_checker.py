@@ -1,7 +1,7 @@
 import re
 from logging import getLogger
 
-from galaxy.tools.parser.error_level import StdioErrorLevel
+from galaxy.tool_util.parser.error_level import StdioErrorLevel
 from galaxy.util import unicodify
 from galaxy.util.bunch import Bunch
 
@@ -146,10 +146,9 @@ def check_output(stdio_regexes, stdio_exit_codes, stdout, stderr, tool_exit_code
             if stderr:
                 state = DETECTED_JOB_STATE.GENERIC_ERROR
 
-        if DETECTED_JOB_STATE != DETECTED_JOB_STATE.OK and stderr:
-            if stderr:
-                peak = stderr[0:ERROR_PEAK]
-                log.debug("job failed, standard error is - [%s]" % peak)
+        if state != DETECTED_JOB_STATE.OK:
+            peak = stderr[0:ERROR_PEAK] if stderr else ""
+            log.debug("job failed, detected state %s, standard error is - [%s]" % (state, peak))
     except Exception:
         log.exception("Job state check encountered unexpected exception; assuming execution successful")
 

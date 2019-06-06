@@ -32,6 +32,9 @@ export { default as HDAModel } from "mvc/history/hda-model";
 export { default as LegacyGridView } from "legacy/grid/grid-view";
 export { create_chart, create_histogram } from "reports/run_stats";
 export { default as ToolshedGroups } from "toolshed/toolshed.groups";
+export { default as IES } from "galaxy.interactive_environments";
+
+export { Toast } from "ui/toast"; // TODO: remove when external consumers are updated/gone (IES right now)
 
 export function adminToolshed(options) {
     new AdminToolshed.GalaxyApp(options);
@@ -97,6 +100,8 @@ export const chartUtilities = {
 export { initMasthead } from "components/Masthead/initMasthead";
 export { panelManagement } from "onload/globalInits/panelManagement";
 export { mountMakoTags } from "components/Tags";
+export { mountJobMetrics } from "components/JobMetrics";
+export { mountJobParameters } from "components/JobParameters";
 
 // Used in common.mako
 export { default as store } from "storemodern";

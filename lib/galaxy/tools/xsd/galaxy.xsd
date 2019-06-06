@@ -1669,7 +1669,7 @@ module.
   </xs:group>
   <xs:complexType name="AssertHasH5Keys">
     <xs:annotation>
-      <xs:documentation xml:lang="en"><![CDATA[Asserts HDF5 output has a set of attributes (``keys``), specified as a comma-separated list (e.g. ``<has_h5_keys keys="bins,chroms,indexes,pixels" />``).]]></xs:documentation>
+      <xs:documentation xml:lang="en"><![CDATA[Asserts HDF5 output has a set of attributes (``keys``), specified as a comma-separated list (e.g. ``<has_h5_keys keys="bins,chroms,indexes,pixels,chroms/lengths" />``).]]></xs:documentation>
     </xs:annotation>
     <xs:attribute name="keys" type="xs:string">
       <xs:annotation>
@@ -2107,7 +2107,7 @@ parameter being described. All the attributes for the ``param`` element are
 documented below for completeness, but here are the common ones for each
 type are as follows:
 
-$attribute_list:name,type,optional,label,help,argument,load_contents:refresh_on_change:4
+$attribute_list:name,type,optional,label,help,argument,load_contents,refresh_on_change:4
 
 ### Parameter Types
 
