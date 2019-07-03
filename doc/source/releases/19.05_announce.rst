@@ -18,10 +18,14 @@ Highlights
   for getting the ball rolling on this initiative.
 
 <<<<<<< HEAD
+<<<<<<< HEAD
   Check out the `19.05 user release notes<https://docs.galaxyproject.org/en/release_19.05/releases/19.05_announce_user.html>`__.
 =======
   Check out the `19.05 user release notes <https://docs.galaxyproject.org/en/release_19.05/releases/19.05_announce_user.html>`__.
 >>>>>>> upstream/master
+=======
+  Check out the `19.05 user release notes <https://docs.galaxyproject.org/en/release_19.05/releases/19.05_announce_user.html>`__.
+>>>>>>> upstream/dev
 
 **Login and Registration Rewrite**
   The march toward replacing templated backend generated HTML with modern, reactive
