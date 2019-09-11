@@ -15,6 +15,13 @@
     <entry_point entry_point_type="chart" src="ngl.js"/>
     <settings>
         <input>
+            <name>traj</name>
+            <label>Trajectory</label>
+            <help>Load trajectory into structure?</help>
+            <type>data</type>
+            <format>pdb</format>
+        </input>
+        <input>
             <label>Quality</label>
             <name>quality</name>
             <help>Select the rendering quality</help>
