@@ -51,7 +51,7 @@ class LocalJobRunner(BaseJobRunner):
         if not ('TMPDIR' in self._environ or 'TEMP' in self._environ or 'TMP' in self._environ):
             self._environ['TEMP'] = os.path.abspath(tempfile.gettempdir())
 
-        super(LocalJobRunner, self).__init__(app, nworkers)
+        super().__init__(app, nworkers)
         self._init_worker_threads()
 
     def __command_line(self, job_wrapper):
@@ -88,19 +88,18 @@ class LocalJobRunner(BaseJobRunner):
         stderr = stdout = ''
 
         # command line has been added to the wrapper by prepare_job()
-        command_line, exit_code_path = self.__command_line(job_wrapper)
+        job_file, exit_code_path = self.__command_line(job_wrapper)
         job_id = job_wrapper.get_id_tag()
 
         try:
             stdout_file = tempfile.NamedTemporaryFile(mode='wb+', suffix='_stdout', dir=job_wrapper.working_directory)
             stderr_file = tempfile.NamedTemporaryFile(mode='wb+', suffix='_stderr', dir=job_wrapper.working_directory)
-            log.debug('(%s) executing job script: %s' % (job_id, command_line))
+            log.debug(f'({job_id}) executing job script: {job_file}')
             # The preexec_fn argument of Popen() is used to call os.setpgrp() in
             # the child process just before the child is executed. This will set
             # the PGID of the child process to its PID (i.e. ensures that it is
             # the root of its own process group instead of Galaxy's one).
-            proc = subprocess.Popen(args=command_line,
-                                    shell=True,
+            proc = subprocess.Popen(args=[job_file],
                                     cwd=job_wrapper.working_directory,
                                     stdout=stdout_file,
                                     stderr=stderr_file,
@@ -112,9 +111,10 @@ class LocalJobRunner(BaseJobRunner):
                 self._procs.append(proc)
 
             try:
-                job_wrapper.set_job_destination(job_wrapper.job_destination, proc.pid)
-                job_wrapper.change_state(model.Job.states.RUNNING)
-
+                job = job_wrapper.get_job()
+                # Flush job with change_state.
+                job_wrapper.set_external_id(proc.pid, job=job, flush=False)
+                job_wrapper.change_state(model.Job.states.RUNNING, job=job)
                 self._handle_container(job_wrapper, proc)
 
                 terminated = self.__poll_if_needed(proc, job_wrapper, job_id)
@@ -137,7 +137,7 @@ class LocalJobRunner(BaseJobRunner):
             stderr = self._job_io_for_db(stderr_file)
             stdout_file.close()
             stderr_file.close()
-            log.debug('execution finished: %s' % command_line)
+            log.debug('execution finished: %s' % job_file)
         except Exception:
             log.exception("failure running job %d", job_wrapper.job_id)
             self._fail_job_local(job_wrapper, "failure running job")
@@ -176,7 +176,7 @@ class LocalJobRunner(BaseJobRunner):
         job_wrapper.change_state(model.Job.states.ERROR, info="This job was killed when Galaxy was restarted.  Please retry the job.")
 
     def shutdown(self):
-        super(LocalJobRunner, self).shutdown()
+        super().shutdown()
         with self._proc_lock:
             for proc in self._procs:
                 proc.terminated_by_shutdown = True

@@ -5,34 +5,32 @@ import logging
 
 from galaxy import (
     exceptions,
-    managers,
     util
 )
-from galaxy.managers import folders
+from galaxy.managers.folders import FolderManager
+from galaxy.managers.hdas import HDAManager
 from galaxy.model import tags
 from galaxy.web import (
     expose_api,
     expose_api_anonymous
 )
-from galaxy.webapps.base.controller import BaseAPIController, UsesLibraryMixin, UsesLibraryMixinItems
+from galaxy.webapps.base.controller import UsesLibraryMixin, UsesLibraryMixinItems
+from . import BaseGalaxyAPIController, depends
 
 log = logging.getLogger(__name__)
 
 
-class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryMixinItems):
+class FolderContentsController(BaseGalaxyAPIController, UsesLibraryMixin, UsesLibraryMixinItems):
     """
     Class controls retrieval, creation and updating of folder contents.
     """
-
-    def __init__(self, app):
-        super(FolderContentsController, self).__init__(app)
-        self.folder_manager = folders.FolderManager()
-        self.hda_manager = managers.hdas.HDAManager(app)
+    hda_manager: HDAManager = depends(HDAManager)
+    folder_manager: FolderManager = depends(FolderManager)
 
     @expose_api_anonymous
-    def index(self, trans, folder_id, **kwd):
+    def index(self, trans, folder_id, limit=None, offset=None, search_text=None, **kwd):
         """
-        GET /api/folders/{encoded_folder_id}/contents
+        GET /api/folders/{encoded_folder_id}/contents?limit={limit}&offset={offset}
 
         Displays a collection (list) of a folder's contents
         (files and folders). Encoded folder ID is prepended
@@ -41,7 +39,18 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
         response as a separate object providing data for
         breadcrumb path building.
 
+        ..example:
+            limit and offset can be combined. Skip the first two and return five:
+                '?limit=3&offset=5'
+
         :param  folder_id: encoded ID of the folder which
+            contents should be library_dataset_dict
+        :type   folder_id: encoded string
+
+        :param  offset: offset for returned library folder datasets
+        :type   folder_id: encoded string
+
+        :param  limit: limit   for returned library folder datasets
             contents should be library_dataset_dict
         :type   folder_id: encoded string
 
@@ -70,7 +79,7 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
             pass
         else:
             if trans.user:
-                log.warning("SECURITY: User (id: %s) without proper access rights is trying to load folder with ID of %s" % (trans.user.id, decoded_folder_id))
+                log.warning(f"SECURITY: User (id: {trans.user.id}) without proper access rights is trying to load folder with ID of {decoded_folder_id}")
             else:
                 log.warning("SECURITY: Anonymous user is trying to load restricted folder with ID of %s" % (decoded_folder_id))
             raise exceptions.ObjectNotFound('Folder with the id provided ( %s ) was not found' % str(folder_id))
@@ -78,8 +87,11 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
         folder_contents = []
         update_time = ''
         create_time = ''
+
+        folders, datasets = self.apply_preferences(folder, deleted, search_text)
+
         #  Go through every accessible item (folders, datasets) in the folder and include its metadata.
-        for content_item in self._load_folder_contents(trans, folder, deleted):
+        for content_item in self._load_folder_contents(trans, folders, datasets, offset, limit):
             return_item = {}
             encoded_id = trans.security.encode_id(content_item.id)
             create_time = content_item.create_time.strftime("%Y-%m-%d %I:%M %p")
@@ -129,6 +141,9 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
                                         tags=ldda_tags))
                 if content_item.library_dataset_dataset_association.message:
                     return_item.update(dict(message=content_item.library_dataset_dataset_association.message))
+                elif content_item.library_dataset_dataset_association.info:
+                    # There is no message but ldda info contains something so we display that instead.
+                    return_item.update(dict(message=content_item.library_dataset_dataset_association.info))
 
             # For every item include the default metadata
             return_item.update(dict(id=encoded_id,
@@ -152,7 +167,10 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
         if folder.parent_library is not None:
             parent_library_id = trans.security.encode_id(folder.parent_library.id)
 
+        total_rows = len(folders) + len(datasets)
+
         metadata = dict(full_path=full_path,
+                        total_rows=total_rows,
                         can_add_library_item=can_add_library_item,
                         can_modify_folder=can_modify_folder,
                         folder_name=folder.name,
@@ -183,7 +201,7 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
             path_to_root.extend(self.build_path(trans, upper_folder))
         return path_to_root
 
-    def _load_folder_contents(self, trans, folder, include_deleted):
+    def _load_folder_contents(self, trans, folders, datasets, offset=None, limit=None):
         """
         Loads all contents of the folder (folders and data sets) but only
         in the first level. Include deleted if the flag is set and if the
@@ -202,19 +220,25 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
         current_user_roles = trans.get_current_user_roles()
         is_admin = trans.user_is_admin
         content_items = []
-        for subfolder in folder.folders:
+
+        offset = 0 if offset is None else int(offset)
+        limit = 0 if limit is None else int(limit)
+
+        current_folders = self._calculate_pagination(folders, offset, limit)
+
+        for subfolder in current_folders:
+
             if subfolder.deleted:
-                if include_deleted:
-                    if is_admin:
-                        # Admins can see all deleted folders.
+                if is_admin:
+                    # Admins can see all deleted folders.
+                    subfolder.api_type = 'folder'
+                    content_items.append(subfolder)
+                else:
+                    # Users with MODIFY permissions can see deleted folders.
+                    can_modify = trans.app.security_agent.can_modify_library_item(current_user_roles, subfolder)
+                    if can_modify:
                         subfolder.api_type = 'folder'
                         content_items.append(subfolder)
-                    else:
-                        # Users with MODIFY permissions can see deleted folders.
-                        can_modify = trans.app.security_agent.can_modify_library_item(current_user_roles, subfolder)
-                        if can_modify:
-                            subfolder.api_type = 'folder'
-                            content_items.append(subfolder)
             else:
                 # Undeleted folders are non-restricted for now. The contents are not.
                 # TODO decide on restrictions
@@ -229,19 +253,24 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
                 #         subfolder.api_type = 'folder'
                 #         content_items.append( subfolder )
 
-        for dataset in folder.datasets:
+        limit -= len(content_items)
+        offset -= len(folders)
+        offset = 0 if offset < 0 else offset
+
+        current_datasets = self._calculate_pagination(datasets, offset, limit)
+
+        for dataset in current_datasets:
             if dataset.deleted:
-                if include_deleted:
-                    if is_admin:
-                        # Admins can see all deleted datasets.
+                if is_admin:
+                    # Admins can see all deleted datasets.
+                    dataset.api_type = 'file'
+                    content_items.append(dataset)
+                else:
+                    # Users with MODIFY permissions on the item can see the deleted item.
+                    can_modify = trans.app.security_agent.can_modify_library_item(current_user_roles, dataset)
+                    if can_modify:
                         dataset.api_type = 'file'
                         content_items.append(dataset)
-                    else:
-                        # Users with MODIFY permissions on the item can see the deleted item.
-                        can_modify = trans.app.security_agent.can_modify_library_item(current_user_roles, dataset)
-                        if can_modify:
-                            dataset.api_type = 'file'
-                            content_items.append(dataset)
             else:
                 if is_admin:
                     dataset.api_type = 'file'
@@ -253,6 +282,41 @@ class FolderContentsController(BaseAPIController, UsesLibraryMixin, UsesLibraryM
                         content_items.append(dataset)
 
         return content_items
+
+    def _calculate_pagination(self, items, offset: int, limit: int):
+        if limit > 0:
+            paginated_items = items[offset:offset + limit]
+        else:
+            paginated_items = items[offset:]
+        return paginated_items
+
+    def apply_preferences(self, folder, include_deleted, search_text):
+
+        def check_deleted(array, include_deleted):
+            if include_deleted:
+                result_array = array
+            else:
+                result_array = [data for data in array if data.deleted == include_deleted]
+            return result_array
+
+        def filter_searched_datasets(dataset):
+            if dataset.library_dataset_dataset_association.message:
+                description = dataset.library_dataset_dataset_association.message
+            elif dataset.library_dataset_dataset_association.info:
+                description = dataset.library_dataset_dataset_association.info
+            else:
+                description = ''
+
+            return search_text in dataset.name or search_text in description
+
+        datasets = check_deleted(folder.datasets, include_deleted)
+        folders = check_deleted(folder.folders, include_deleted)
+
+        if search_text is not None:
+            folders = [item for item in folders if search_text in item.name or search_text in item.description]
+            datasets = list(filter(filter_searched_datasets, datasets))
+
+        return folders, datasets
 
     @expose_api
     def create(self, trans, encoded_folder_id, payload, **kwd):

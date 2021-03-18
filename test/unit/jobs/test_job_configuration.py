@@ -3,10 +3,11 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
-import mock
 from pykwalify.core import Core
 
+from galaxy.job_metrics import JobMetrics
 from galaxy.jobs import JobConfiguration
 from galaxy.util import bunch
 from galaxy.web_stack import ApplicationStack, UWSGIApplicationStack
@@ -51,7 +52,7 @@ class BaseJobConfXmlParserTestCase(unittest.TestCase):
         if not self._app:
             self._app = bunch.Bunch(
                 config=self.config,
-                job_metrics=MockJobMetrics(),
+                job_metrics=JobMetrics(),
                 application_stack=self.application_stack
             )
         return self._app
@@ -83,18 +84,18 @@ class BaseJobConfXmlParserTestCase(unittest.TestCase):
         template = {
             'assign_with': ' assign_with="%s"' % assign_with if assign_with is not None else '',
             'default': ' default="%s"' % default if default is not None else '',
-            'handlers': '\n'.join([
+            'handlers': '\n'.join(
                 '<handler id="{id}"{tags}/>'.format(
                     id=x['id'],
                     tags=' tags="%s"' % x['tags'] if 'tags' in x else ''
-                ) for x in handlers]),
+                ) for x in handlers),
         }
         self._job_configuration_base_pools = base_pools
         self._write_config_from(HANDLER_TEMPLATE_JOB_CONF, template=template)
 
     def _write_config_from(self, path, template=None):
         template = template or {}
-        contents = open(path, "r").read()
+        contents = open(path).read()
         if template:
             contents = contents.format(**template)
         self._write_config(contents)
@@ -281,6 +282,16 @@ class SimpleJobConfXmlParserTestCase(BaseJobConfXmlParserTestCase):
 
 class AdvancedJobConfXmlParserTestCase(BaseJobConfXmlParserTestCase):
 
+    def test_disable_job_metrics(self):
+        self._with_advanced_config()
+        self.job_config.destinations["multicore_local"]
+        assert len(self.app.job_metrics.job_instrumenters["multicore_local"].plugins) == 0
+
+    def test_default_job_metrics(self):
+        self._with_advanced_config()
+        self.job_config.destinations["pbs_longjobs"]
+        assert self.app.job_metrics.job_instrumenters["pbs_longjobs"] == self.app.job_metrics.default_job_instrumenter
+
     def test_load_destination_params(self):
         self._with_advanced_config()
         pbs_dest = self.job_config.destinations["pbs_longjobs"][0]
@@ -368,6 +379,7 @@ class AdvancedJobConfXmlParserTestCase(BaseJobConfXmlParserTestCase):
         assert self.job_config.tools["foo"][-1].params["source"] == "trackster"
         assert self.job_config.tools["longbar"][-1].destination == "dynamic"
         assert self.job_config.tools["longbar"][-1].resources == "all"
+        assert "resources" not in self.job_config.tools["longbar"][-1].params
 
     def test_handler_runner_plugins(self):
         self._with_advanced_config()
@@ -401,12 +413,3 @@ def test_yaml_advanced_validation():
             schema_files=[schema],
         )
         c.validate()
-
-
-class MockJobMetrics(object):
-
-    def __init__(self):
-        pass
-
-    def set_destination_conf_element(self, id, element):
-        pass

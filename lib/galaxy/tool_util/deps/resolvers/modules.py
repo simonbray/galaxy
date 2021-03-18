@@ -7,6 +7,7 @@ it, hence support for it will be minimal. The Galaxy team eagerly welcomes
 community contribution and maintenance however.
 """
 import logging
+from io import StringIO
 from os import (
     environ,
     pathsep
@@ -20,8 +21,6 @@ from subprocess import (
     PIPE,
     Popen
 )
-
-from six import StringIO
 
 from . import (
     Dependency,
@@ -84,9 +83,9 @@ class ModuleDependencyResolver(DependencyResolver, MappableDependencyResolver):
             return NullDependency(version=version, name=name)
 
         if self.__has_module(name, version):
-            return ModuleDependency(self, name, version, exact=True)
+            return ModuleDependency(self, name, version, exact=True, dependency_resolver=self)
         elif self.versionless and self.__has_module(name, None):
-            return ModuleDependency(self, name, None, exact=False)
+            return ModuleDependency(self, name, None, exact=False, dependency_resolver=self)
 
         return NullDependency(version=version, name=name)
 
@@ -94,7 +93,7 @@ class ModuleDependencyResolver(DependencyResolver, MappableDependencyResolver):
         return self.module_checker.has_module(name, version)
 
 
-class DirectoryModuleChecker(object):
+class DirectoryModuleChecker:
     """Finds module by path.
 
     Searches the paths listed in modulepath to for a file or directory matching the module name.
@@ -122,7 +121,7 @@ class DirectoryModuleChecker(object):
         return has_module
 
 
-class AvailModuleChecker(object):
+class AvailModuleChecker:
     """Finds modules by searching output of 'module avail'.
 
     Parses the Environment Modules 'module avail' output, splitting
@@ -183,14 +182,15 @@ class ModuleDependency(Dependency):
     Using Environment Modules' 'modulecmd' (specifically 'modulecmd sh load') to
     convert module specifications into shell expressions for inclusion in
     the script used to run a tool in Galaxy."""
-    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['module_name', 'module_version']
+    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['module_name', 'module_version', 'dependency_resolver']
     dependency_type = 'module'
 
-    def __init__(self, module_dependency_resolver, module_name, module_version=None, exact=True):
+    def __init__(self, module_dependency_resolver, module_name, module_version=None, exact=True, dependency_resolver=None):
         self.module_dependency_resolver = module_dependency_resolver
         self.module_name = module_name
         self.module_version = module_version
         self._exact = exact
+        self.dependency_resolver = dependency_resolver
 
     @property
     def name(self):
@@ -207,8 +207,8 @@ class ModuleDependency(Dependency):
     def shell_commands(self):
         module_to_load = self.module_name
         if self.module_version:
-            module_to_load = '%s/%s' % (self.module_name, self.module_version)
-        command = 'MODULEPATH=%s; export MODULEPATH; eval `%s sh load %s`' % (self.module_dependency_resolver.modulepath,
+            module_to_load = f'{self.module_name}/{self.module_version}'
+        command = 'MODULEPATH={}; export MODULEPATH; eval `{} sh load {}`'.format(self.module_dependency_resolver.modulepath,
                                                                               self.module_dependency_resolver.modulecmd,
                                                                               module_to_load)
         return command

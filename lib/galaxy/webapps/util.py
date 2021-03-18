@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 import logging
 
 import mako.exceptions
@@ -38,7 +36,7 @@ def wrap_if_allowed_or_fail(app, stack, wrap, name=None, args=None, kwargs=None)
 
     Arguments are the same as for :func:`wrap_if_allowed`.
 
-    Raises :exception:`MiddlewareWrapUnsupported` if the stack does not allow the middleware.
+    Raises py:class:`MiddlewareWrapUnsupported` if the stack does not allow the middleware.
     """
     name = name or wrap.__name__
     if not stack.allowed_middleware(wrap):
@@ -55,7 +53,7 @@ def wrap_if_allowed(app, stack, wrap, name=None, args=None, kwargs=None):
     """
     Wrap the application with the given method if the application stack allows for it.
 
-    :type   app:    :class:`galaxy.web.framework.webapp.WebApplication` subclass
+    :type   app:    :class:`galaxy.webapps.base.webapp.WebApplication` subclass
     :param  app:    application to wrap
     :type   stack:  :class:`galaxy.web_stack.ApplicationStack` subclass
     :param  stack:  instance of application stack implementing `allowed_middleware()` method

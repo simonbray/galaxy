@@ -1,13 +1,11 @@
 # TODO: this is largely copied from galaxy.tools.toolbox.galaxy and generalized, the tool-oriented watchers in that
 # module should probably be updated to use this where possible
 
-from __future__ import absolute_import
 
 import logging
 import os.path
 import time
 
-from six.moves import filter
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -40,7 +38,7 @@ def get_observer_class(config_name, config_value, default, monitor_what_str):
         expect_observer = False
         observer_class = None
     else:
-        message = "Unrecognized value for %s config option: %s" % (config_name, config_value)
+        message = f"Unrecognized value for {config_name} config option: {config_value}"
         raise Exception(message)
 
     if expect_observer and observer_class is None:
@@ -65,17 +63,28 @@ def get_watcher(config, config_name, default="False", monitor_what_str=None, wat
         return NullWatcher()
 
 
-class BaseWatcher(object):
+class BaseWatcher:
 
     def __init__(self, observer_class, even_handler_class, **kwargs):
         self.observer = None
         self.observer_class = observer_class
         self.event_handler = even_handler_class(self)
+        self.monitored_dirs = {}
 
     def start(self):
         if self.observer is None:
             self.observer = self.observer_class()
             self.observer.start()
+            self.resume_watching()
+
+    def monitor(self, dir_path, recursive=False):
+        self.monitored_dirs[dir_path] = recursive
+        if self.observer is not None:
+            self.observer.schedule(self.event_handler, dir_path, recursive=recursive)
+
+    def resume_watching(self):
+        for dir_path, recursive in self.monitored_dirs.items():
+            self.monitor(dir_path, recursive)
 
     def shutdown(self):
         if self.observer is not None:
@@ -87,8 +96,7 @@ class BaseWatcher(object):
 class Watcher(BaseWatcher):
 
     def __init__(self, observer_class, event_handler_class, **kwargs):
-        super(Watcher, self).__init__(observer_class, event_handler_class, **kwargs)
-        self.monitored_dirs = {}
+        super().__init__(observer_class, event_handler_class, **kwargs)
         self.path_hash = {}
         self.file_callbacks = {}
         self.dir_callbacks = {}
@@ -96,16 +104,12 @@ class Watcher(BaseWatcher):
         self.require_extensions = {}
         self.event_handler = event_handler_class(self)
 
-    def monitor(self, dir, recursive=False):
-        self.observer.schedule(self.event_handler, dir, recursive=recursive)
-
     def watch_file(self, file_path, callback=None):
         file_path = os.path.abspath(file_path)
         dir_path = os.path.dirname(file_path)
         if dir_path not in self.monitored_dirs:
             if callback is not None:
                 self.file_callbacks[file_path] = callback
-            self.monitored_dirs[dir_path] = dir_path
             self.monitor(dir_path)
             log.debug("Watching for changes to file: %s", file_path)
 
@@ -118,7 +122,6 @@ class Watcher(BaseWatcher):
                 self.ignore_extensions[dir_path] = ignore_extensions
             if require_extensions:
                 self.require_extensions[dir_path] = require_extensions
-            self.monitored_dirs[dir_path] = dir_path
             self.monitor(dir_path, recursive=recursive)
             log.debug("Watching for changes in directory%s: %s", ' (recursively)' if recursive else '', dir_path)
 
@@ -170,7 +173,7 @@ class EventHandler(FileSystemEventHandler):
                 callback(path=path)
 
 
-class NullWatcher(object):
+class NullWatcher:
 
     def start(self):
         pass

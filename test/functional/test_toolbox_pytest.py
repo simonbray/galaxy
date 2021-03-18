@@ -5,7 +5,8 @@ galaxy_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pa
 sys.path[1:1] = [os.path.join(galaxy_root, "lib"), os.path.join(galaxy_root, "test")]
 
 import pytest
-from base import driver_util
+
+from galaxy_test.driver import driver_util
 
 SKIPTEST = os.path.join(os.path.dirname(__file__), 'known_broken_tools.txt')
 TEST_PREFIX = 'TestForTool_'
@@ -27,7 +28,7 @@ class DefaultGalaxyTestDriver(driver_util.GalaxyTestDriver):
 
 def get_skiplist():
     with open(SKIPTEST) as skiptest:
-        skiplist = [l.strip() for l in skiptest if l.strip() and not l.startswith('#')]
+        skiplist = [line.strip() for line in skiptest if line.strip() and not line.startswith('#')]
         return skiplist
 
 
@@ -53,7 +54,7 @@ def get_cases():
     cases = []
     for test_name, test_class in tests.items():
         if test_name.startswith(TEST_PREFIX):
-            test_class.runTest = lambda : None
+            test_class.runTest = lambda: None
             test_instance = test_class()
             cases.append(test_instance)
     return cases

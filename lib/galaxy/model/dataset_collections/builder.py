@@ -1,5 +1,3 @@
-from collections import OrderedDict
-
 from galaxy import model
 from .type_description import COLLECTION_TYPE_DESCRIPTION_FACTORY
 
@@ -25,17 +23,16 @@ def set_collection_elements(dataset_collection, type, dataset_instances):
 
         element_index += 1
 
-    dataset_collection.elements = elements
     dataset_collection.element_count = element_index
     return dataset_collection
 
 
-class CollectionBuilder(object):
+class CollectionBuilder:
     """ Purely functional builder pattern for building a dataset collection. """
 
     def __init__(self, collection_type_description):
         self._collection_type_description = collection_type_description
-        self._current_elements = OrderedDict()
+        self._current_elements = {}
 
     def replace_elements_in_collection(self, template_collection, replacement_dict):
         self._current_elements = self._replace_elements_in_collection(
@@ -44,7 +41,7 @@ class CollectionBuilder(object):
         )
 
     def _replace_elements_in_collection(self, template_collection, replacement_dict):
-        elements = OrderedDict()
+        elements = {}
         for element in template_collection.elements:
             if element.is_collection:
                 collection_builder = CollectionBuilder(
@@ -78,7 +75,7 @@ class CollectionBuilder(object):
     def build_elements(self):
         elements = self._current_elements
         if self._nested_collection:
-            new_elements = OrderedDict()
+            new_elements = {}
             for identifier, element in elements.items():
                 new_elements[identifier] = element.build()
             elements = new_elements
@@ -108,7 +105,7 @@ class BoundCollectionBuilder(CollectionBuilder):
             raise Exception("Cannot reset elements of an already populated dataset collection.")
         collection_type = dataset_collection.collection_type
         collection_type_description = COLLECTION_TYPE_DESCRIPTION_FACTORY.for_collection_type(collection_type)
-        super(BoundCollectionBuilder, self).__init__(collection_type_description)
+        super().__init__(collection_type_description)
 
     def populate(self):
         elements = self.build_elements()

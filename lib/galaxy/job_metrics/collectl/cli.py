@@ -12,7 +12,7 @@ MODE_RECORD = "record"
 MODE_PLAYBACK = "playback"
 
 
-class CollectlCli(object):
+class CollectlCli:
     """
     Abstraction over (some of) the command-line arguments of collectl.
     Ideally this will be useful for building up command line arguments for
@@ -92,7 +92,7 @@ class CollectlCli(object):
 
     def __subsystems_arg(self, subsystems):
         if subsystems:
-            return "-s%s" % "".join([s.command_line_arg for s in subsystems])
+            return "-s%s" % "".join(s.command_line_arg for s in subsystems)
         else:
             return ""
 
@@ -110,13 +110,13 @@ class CollectlCli(object):
         if not interval2:
             return interval_arg
         self.__validate_interval_arg(interval2, multiple_of=int(interval))
-        interval_arg = "%s:%s" % (interval_arg, interval2)
+        interval_arg = f"{interval_arg}:{interval2}"
 
         interval3 = kwargs.get("interval3", None)
         if not interval3:
             return interval_arg
         self.__validate_interval_arg(interval3, multiple_of=int(interval))
-        interval_arg = "%s:%s" % (interval_arg, interval3)
+        interval_arg = f"{interval_arg}:{interval3}"
         return interval_arg
 
     def __validate_interval_arg(self, value, multiple_of=None):

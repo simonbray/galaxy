@@ -3,17 +3,16 @@
 Used to share code between the Galaxy test framework
 and other Galaxy CWL clients (e.g. Planemo)."""
 import hashlib
+import io
 import json
 import os
 import tarfile
 import tempfile
 from collections import namedtuple
 
-from six import (
-    BytesIO,
-    iteritems,
-    python_2_unicode_compatible
-)
+import yaml
+
+from galaxy.util import unicodify
 
 STORE_SECONDARY_FILES_WITH_BASENAME = True
 SECONDARY_FILES_EXTRA_PREFIX = "__secondary_files__"
@@ -35,7 +34,7 @@ def output_properties(path=None, content=None, basename=None, pseduo_location=Fa
         properties["path"] = path
         f = open(path, "rb")
     else:
-        f = BytesIO(content)
+        f = io.BytesIO(content)
 
     try:
         contents = f.read(1024 * 1024)
@@ -69,6 +68,14 @@ def abs_path_or_uri(path_or_uri, relative_to):
     return path_or_uri
 
 
+def abs_path(path_or_uri, relative_to):
+    path_or_uri = abs_path_or_uri(path_or_uri, relative_to)
+    if path_or_uri.startswith("file://"):
+        path_or_uri = path_or_uri[len("file://"):]
+
+    return path_or_uri
+
+
 def path_or_uri_to_uri(path_or_uri):
     if "://" not in path_or_uri:
         return "file://%s" % path_or_uri
@@ -91,31 +98,46 @@ def galactic_job_json(
     datasets = []
     dataset_collections = []
 
-    def upload_file(file_path, secondary_files, **kwargs):
-        file_path = abs_path_or_uri(file_path, test_data_directory)
-        target = FileUploadTarget(file_path, secondary_files, **kwargs)
-        upload_response = upload_func(target)
+    def response_to_hda(target, upload_response):
+        assert isinstance(upload_response, dict), upload_response
+        assert "outputs" in upload_response, upload_response
+        assert len(upload_response["outputs"]) > 0, upload_response
         dataset = upload_response["outputs"][0]
         datasets.append((dataset, target))
         dataset_id = dataset["id"]
         return {"src": "hda", "id": dataset_id}
+
+    def upload_file(file_path, secondary_files, **kwargs):
+        file_path = abs_path_or_uri(file_path, test_data_directory)
+        target = FileUploadTarget(file_path, secondary_files, **kwargs)
+        upload_response = upload_func(target)
+        return response_to_hda(target, upload_response)
+
+    def upload_file_literal(contents, **kwd):
+        target = FileLiteralTarget(contents, **kwd)
+        upload_response = upload_func(target)
+        return response_to_hda(target, upload_response)
 
     def upload_tar(file_path):
         file_path = abs_path_or_uri(file_path, test_data_directory)
         target = DirectoryUploadTarget(file_path)
         upload_response = upload_func(target)
-        dataset = upload_response["outputs"][0]
-        datasets.append((dataset, target))
-        dataset_id = dataset["id"]
-        return {"src": "hda", "id": dataset_id}
+        return response_to_hda(target, upload_response)
+
+    def upload_file_with_composite_data(file_path, composite_data, **kwargs):
+        if file_path is not None:
+            file_path = abs_path_or_uri(file_path, test_data_directory)
+        composite_data_resolved = []
+        for cd in composite_data:
+            composite_data_resolved.append(abs_path_or_uri(cd, test_data_directory))
+        target = FileUploadTarget(file_path, composite_data=composite_data_resolved, **kwargs)
+        upload_response = upload_func(target)
+        return response_to_hda(target, upload_response)
 
     def upload_object(the_object):
         target = ObjectUploadTarget(the_object)
         upload_response = upload_func(target)
-        dataset = upload_response["outputs"][0]
-        datasets.append((dataset, target))
-        dataset_id = dataset["id"]
-        return {"src": "hda", "id": dataset_id}
+        return response_to_hda(target, upload_response)
 
     def replacement_item(value, force_to_file=False):
         is_dict = isinstance(value, dict)
@@ -149,11 +171,36 @@ def galactic_job_json(
             return replacement_record(value)
 
     def replacement_file(value):
+        if value.get('galaxy_id'):
+            return {"src": "hda", "id": value['galaxy_id']}
         file_path = value.get("location", None) or value.get("path", None)
+        # format to match output definitions in tool, where did filetype come from?
+        filetype = value.get("filetype", None) or value.get("format", None)
+        composite_data_raw = value.get("composite_data", None)
+        kwd = {}
+        if "tags" in value:
+            kwd["tags"] = value.get("tags")
+        if "dbkey" in value:
+            kwd["dbkey"] = value.get("dbkey")
+        if composite_data_raw:
+            composite_data = []
+            for entry in composite_data_raw:
+                path = None
+                if isinstance(entry, dict):
+                    path = entry.get("location", None) or entry.get("path", None)
+                else:
+                    path = entry
+                composite_data.append(path)
+            rval_c = upload_file_with_composite_data(None, composite_data, filetype=filetype, **kwd)
+            return rval_c
+
         if file_path is None:
+            contents = value.get("contents", None)
+            if contents is not None:
+                return upload_file_literal(contents, **kwd)
+
             return value
 
-        filetype = value.get('filetype', None)
         secondary_files = value.get("secondaryFiles", [])
         secondary_files_tar_path = None
         if secondary_files:
@@ -168,16 +215,16 @@ def galactic_job_json(
                 assert secondary_file_path, "Invalid secondaryFile entry found [%s]" % secondary_file
                 full_secondary_file_path = os.path.join(test_data_directory, secondary_file_path)
                 basename = secondary_file.get("basename") or os.path.basename(secondary_file_path)
-                order.append(basename)
+                order.append(unicodify(basename))
                 tf.add(full_secondary_file_path, os.path.join(SECONDARY_FILES_EXTRA_PREFIX, basename))
-            tmp_index = tempfile.NamedTemporaryFile(delete=False)
+            tmp_index = tempfile.NamedTemporaryFile(delete=False, mode="w")
             json.dump(index_contents, tmp_index)
             tmp_index.close()
             tf.add(tmp_index.name, SECONDARY_FILES_INDEX_PATH)
             tf.close()
             secondary_files_tar_path = tmp.name
 
-        return upload_file(file_path, secondary_files_tar_path, filetype=filetype)
+        return upload_file(file_path, secondary_files_tar_path, filetype=filetype, **kwd)
 
     def replacement_directory(value):
         file_path = value.get("location", None) or value.get("path", None)
@@ -208,22 +255,40 @@ def galactic_job_json(
         hdca_id = collection["id"]
         return {"src": "hdca", "id": hdca_id}
 
-    def replacement_collection(value):
+    def to_elements(value, rank_collection_type):
         collection_element_identifiers = []
-        assert "collection_type" in value
         assert "elements" in value
-
-        collection_type = value["collection_type"]
         elements = value["elements"]
 
+        is_nested_collection = ":" in rank_collection_type
         for element in elements:
-            dataset = replacement_item(element, force_to_file=True)
-            collection_element = dataset.copy()
-            collection_element["name"] = element["identifier"]
-            collection_element_identifiers.append(collection_element)
+            if not is_nested_collection:
+                # flat collection
+                dataset = replacement_item(element, force_to_file=True)
+                collection_element = dataset.copy()
+                collection_element["name"] = element["identifier"]
+                collection_element_identifiers.append(collection_element)
+            else:
+                # nested collection
+                sub_collection_type = rank_collection_type[rank_collection_type.find(":") + 1:]
+                collection_element = {
+                    "name": element["identifier"],
+                    "src": "new_collection",
+                    "collection_type": sub_collection_type,
+                    "element_identifiers": to_elements(element, sub_collection_type)
+                }
+                collection_element_identifiers.append(collection_element)
 
-        # TODO: handle nested lists/arrays
-        collection = collection_create_func(collection_element_identifiers, collection_type)
+        return collection_element_identifiers
+
+    def replacement_collection(value):
+        if value.get('galaxy_id'):
+            return {"src": "hdca", "id": value['galaxy_id']}
+        assert "collection_type" in value
+        collection_type = value["collection_type"]
+        elements = to_elements(value, collection_type)
+
+        collection = collection_create_func(elements, collection_type)
         dataset_collections.append(collection)
         hdca_id = collection["id"]
         return {"src": "hdca", "id": hdca_id}
@@ -231,11 +296,11 @@ def galactic_job_json(
     def replacement_record(value):
         collection_element_identifiers = []
         for record_key, record_value in value.items():
-            if record_value.get("class") != "File":
+            if not isinstance(record_value, dict) or record_value.get("class") != "File":
                 dataset = replacement_item(record_value, force_to_file=True)
                 collection_element = dataset.copy()
             else:
-                dataset = upload_file(record_value["location"])
+                dataset = upload_file(record_value["location"], [])
                 collection_element = dataset.copy()
 
             collection_element["name"] = record_key
@@ -247,7 +312,7 @@ def galactic_job_json(
         return {"src": "hdca", "id": hdca_id}
 
     replace_keys = {}
-    for key, value in iteritems(job):
+    for key, value in job.items():
         replace_keys[key] = replacement_item(value)
 
     job.update(replace_keys)
@@ -267,30 +332,40 @@ def _ensure_file_exists(file_path):
         raise Exception(message)
 
 
-@python_2_unicode_compatible
-class FileUploadTarget(object):
+class FileLiteralTarget:
+
+    def __init__(self, contents, path=None, **kwargs):
+        self.contents = contents
+        self.properties = kwargs
+        self.path = path
+
+    def __str__(self):
+        return f"FileLiteralTarget[contents={self.contents}] with {self.properties}"
+
+
+class FileUploadTarget:
 
     def __init__(self, path, secondary_files=None, **kwargs):
         self.path = path
         self.secondary_files = secondary_files
+        self.composite_data = kwargs.get("composite_data", [])
         self.properties = kwargs
 
     def __str__(self):
-        return "FileUploadTarget[path=%s] with %s" % (self.path, self.properties)
+        return f"FileUploadTarget[path={self.path}] with {self.properties}"
 
 
-@python_2_unicode_compatible
-class ObjectUploadTarget(object):
+class ObjectUploadTarget:
 
     def __init__(self, the_object):
         self.object = the_object
+        self.properties = {}
 
     def __str__(self):
-        return "ObjectUploadTarget[object=%s]" % self.object
+        return f"ObjectUploadTarget[object={self.object} with {self.properties}]"
 
 
-@python_2_unicode_compatible
-class DirectoryUploadTarget(object):
+class DirectoryUploadTarget:
 
     def __init__(self, tar_path):
         self.tar_path = tar_path
@@ -299,17 +374,17 @@ class DirectoryUploadTarget(object):
         return "DirectoryUploadTarget[tar_path=%s]" % self.tar_path
 
 
-GalaxyOutput = namedtuple("GalaxyOutput", ["history_id", "history_content_type", "history_content_id"])
+GalaxyOutput = namedtuple("GalaxyOutput", ["history_id", "history_content_type", "history_content_id", "metadata"])
 
 
 def tool_response_to_output(tool_response, history_id, output_id):
     for output in tool_response["outputs"]:
         if output["output_name"] == output_id:
-            return GalaxyOutput(history_id, "dataset", output["id"])
+            return GalaxyOutput(history_id, "dataset", output["id"], None)
 
     for output_collection in tool_response["output_collections"]:
         if output_collection["output_name"] == output_id:
-            return GalaxyOutput(history_id, "dataset_collection", output_collection["id"])
+            return GalaxyOutput(history_id, "dataset_collection", output_collection["id"], None)
 
     raise Exception("Failed to find output with label [%s]" % output_id)
 
@@ -317,12 +392,15 @@ def tool_response_to_output(tool_response, history_id, output_id):
 def invocation_to_output(invocation, history_id, output_id):
     if output_id in invocation["outputs"]:
         dataset = invocation["outputs"][output_id]
-        galaxy_output = GalaxyOutput(history_id, "dataset", dataset["id"])
+        galaxy_output = GalaxyOutput(history_id, "dataset", dataset["id"], None)
     elif output_id in invocation["output_collections"]:
         collection = invocation["output_collections"][output_id]
-        galaxy_output = GalaxyOutput(history_id, "dataset_collection", collection["id"])
+        galaxy_output = GalaxyOutput(history_id, "dataset_collection", collection["id"], None)
+    elif output_id in invocation["output_values"]:
+        output_value = invocation["output_values"][output_id]
+        galaxy_output = GalaxyOutput(None, "raw_value", output_value, None)
     else:
-        raise Exception("Failed to find output with label [%s] in [%s]" % (output_id, invocation))
+        raise Exception(f"Failed to find output with label [{output_id}] in [{invocation}]")
 
     return galaxy_output
 
@@ -336,23 +414,35 @@ def output_to_cwl_json(
     interface via Galaxy.
     """
     def element_to_cwl_json(element):
+        object = element["object"]
+        content_type = object.get("history_content_type")
+        metadata = None
+        if content_type is None:
+            content_type = "dataset_collection"
+            metadata = element["object"]
+            metadata["history_content_type"] = content_type
         element_output = GalaxyOutput(
             galaxy_output.history_id,
-            element["object"]["history_content_type"],
-            element["object"]["id"],
+            content_type,
+            object["id"],
+            metadata,
         )
-        return output_to_cwl_json(element_output, get_metadata, get_dataset, get_extra_files)
+        return output_to_cwl_json(element_output, get_metadata, get_dataset, get_extra_files, pseduo_location=pseduo_location)
 
-    output_metadata = get_metadata(galaxy_output.history_content_type, galaxy_output.history_content_id)
+    output_metadata = galaxy_output.metadata
+    if output_metadata is None:
+        output_metadata = get_metadata(galaxy_output.history_content_type, galaxy_output.history_content_id)
 
     def dataset_dict_to_json_content(dataset_dict):
         if "content" in dataset_dict:
             return json.loads(dataset_dict["content"])
         else:
             with open(dataset_dict["path"]) as f:
-                return json.load(f)
+                return json.safe_load(f)
 
-    if output_metadata["history_content_type"] == "dataset":
+    if galaxy_output.history_content_type == "raw_value":
+        return galaxy_output.history_content_id
+    elif output_metadata["history_content_type"] == "dataset":
         ext = output_metadata["file_ext"]
         assert output_metadata["state"] == "ok"
         if ext == "expression.json":
@@ -360,6 +450,8 @@ def output_to_cwl_json(
             return dataset_dict_to_json_content(dataset_dict)
         else:
             file_or_directory = "Directory" if ext == "directory" else "File"
+            secondary_files = []
+
             if file_or_directory == "File":
                 dataset_dict = get_dataset(output_metadata)
                 properties = output_properties(pseduo_location=pseduo_location, **dataset_dict)
@@ -375,23 +467,59 @@ def output_to_cwl_json(
                 if found_index:
                     ec = get_dataset(output_metadata, filename=SECONDARY_FILES_INDEX_PATH)
                     index = dataset_dict_to_json_content(ec)
+
+                    def dir_listing(dir_path):
+                        listing = []
+                        for extra_file in extra_files:
+                            path = extra_file["path"]
+                            extra_file_class = extra_file["class"]
+                            extra_file_basename = os.path.basename(path)
+                            if os.path.join(dir_path, extra_file_basename) != path:
+                                continue
+
+                            if extra_file_class == "File":
+                                ec = get_dataset(output_metadata, filename=path)
+                                ec["basename"] = extra_file_basename
+                                ec_properties = output_properties(pseduo_location=pseduo_location, **ec)
+                            elif extra_file_class == "Directory":
+                                ec_properties = {}
+                                ec_properties["class"] = "Directory"
+                                ec_properties["location"] = ec_basename
+                                ec_properties["listing"] = dir_listing(path)
+                            else:
+                                raise Exception("Unknown output type encountered....")
+                            listing.append(ec_properties)
+                        return listing
+
                     for basename in index["order"]:
                         for extra_file in extra_files:
-                            if extra_file["class"] == "File":
-                                path = extra_file["path"]
-                                if path == os.path.join(SECONDARY_FILES_EXTRA_PREFIX, basename):
-                                    ec = get_dataset(output_metadata, filename=path)
-                                    if not STORE_SECONDARY_FILES_WITH_BASENAME:
-                                        ec["basename"] = basename + os.path.basename(path)
-                                    else:
-                                        ec["basename"] = os.path.basename(path)
-                                    ec_properties = output_properties(pseduo_location=pseduo_location, **ec)
-                                    if "secondaryFiles" not in properties:
-                                        properties["secondaryFiles"] = []
+                            path = extra_file["path"]
+                            if path != os.path.join(SECONDARY_FILES_EXTRA_PREFIX, basename):
+                                continue
 
-                                    properties["secondaryFiles"].append(ec_properties)
+                            extra_file_class = extra_file["class"]
+
+                            # This is wrong...
+                            if not STORE_SECONDARY_FILES_WITH_BASENAME:
+                                ec_basename = basename + os.path.basename(path)
+                            else:
+                                ec_basename = os.path.basename(path)
+
+                            if extra_file_class == "File":
+                                ec = get_dataset(output_metadata, filename=path)
+                                ec["basename"] = ec_basename
+                                ec_properties = output_properties(pseduo_location=pseduo_location, **ec)
+                            elif extra_file_class == "Directory":
+                                ec_properties = {}
+                                ec_properties["class"] = "Directory"
+                                ec_properties["location"] = ec_basename
+                                ec_properties["listing"] = dir_listing(path)
+                            else:
+                                raise Exception("Unknown output type encountered....")
+                            secondary_files.append(ec_properties)
+
             else:
-                basename = output_metadata.get("cwl_file_name")
+                basename = output_metadata.get("created_from_basename")
                 if not basename:
                     basename = output_metadata.get("name")
 
@@ -411,17 +539,43 @@ def output_to_cwl_json(
                         ec_properties = output_properties(pseduo_location=pseduo_location, **ec)
                         listing.append(ec_properties)
 
+            if secondary_files:
+                properties["secondaryFiles"] = secondary_files
             return properties
 
     elif output_metadata["history_content_type"] == "dataset_collection":
-        if output_metadata["collection_type"] == "list":
+        rval = None
+        collection_type = output_metadata["collection_type"].split(":", 1)[0]
+        if collection_type in ["list", "paired"]:
             rval = []
             for element in output_metadata["elements"]:
                 rval.append(element_to_cwl_json(element))
-        elif output_metadata["collection_type"] == "record":
+        elif collection_type == "record":
             rval = {}
             for element in output_metadata["elements"]:
                 rval[element["element_identifier"]] = element_to_cwl_json(element)
         return rval
     else:
         raise NotImplementedError("Unknown history content type encountered")
+
+
+def download_output(galaxy_output, get_metadata, get_dataset, get_extra_files, output_path):
+    output_metadata = get_metadata(galaxy_output.history_content_type, galaxy_output.history_content_id)
+    dataset_dict = get_dataset(output_metadata)
+    with open(output_path, 'wb') as fh:
+        fh.write(dataset_dict['content'])
+
+
+def guess_artifact_type(path):
+    # TODO: Handle IDs within files.
+    tool_or_workflow = "workflow"
+    try:
+        with open(path) as f:
+            artifact = yaml.safe_load(f)
+
+        tool_or_workflow = "tool" if artifact["class"] != "Workflow" else "workflow"
+
+    except Exception as e:
+        print(e)
+
+    return tool_or_workflow

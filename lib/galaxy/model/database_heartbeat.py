@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 import socket
 import threading
 
@@ -9,7 +10,7 @@ from galaxy.model.orm.now import now
 log = logging.getLogger(__name__)
 
 
-class DatabaseHeartbeat(object):
+class DatabaseHeartbeat:
 
     def __init__(self, application_stack, heartbeat_interval=60):
         self.application_stack = application_stack
@@ -20,10 +21,11 @@ class DatabaseHeartbeat(object):
         self.exit = threading.Event()
         self.thread = None
         self.active = False
+        self.pid = None
 
     @property
     def sa_session(self):
-        return self.application_stack.app.model.context
+        return self.application_stack.app.model.session
 
     @property
     def server_name(self):
@@ -36,6 +38,7 @@ class DatabaseHeartbeat(object):
             self.thread.daemon = True
             self.active = True
             self.thread.start()
+            self.pid = os.getpid()
 
     def shutdown(self):
         self.active = False
@@ -81,12 +84,13 @@ class DatabaseHeartbeat(object):
         if not worker_process:
             worker_process = WorkerProcess(server_name=self.server_name, hostname=self.hostname)
         worker_process.update_time = now()
+        worker_process.pid = self.pid
         self.sa_session.add(worker_process)
         self.sa_session.flush()
         # We only want a single process watching the various config files on the file system.
         # We just pick the max server name for simplicity
         is_config_watcher = self.server_name == max(
-            (p.server_name for p in self.get_active_processes(self.heartbeat_interval + 1)))
+            p.server_name for p in self.get_active_processes(self.heartbeat_interval + 1))
         if is_config_watcher != self.is_config_watcher:
             self.is_config_watcher = is_config_watcher
 

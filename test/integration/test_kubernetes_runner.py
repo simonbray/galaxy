@@ -1,5 +1,6 @@
 """Integration tests for the Kubernetes runner."""
-# Tested on docker for mac 18.06.1-ce-mac73 using the default kubernetes setup
+# Tested on docker for mac 18.06.1-ce-mac73 using the default kubernetes setup,
+# also works on minikube
 import collections
 import json
 import os
@@ -10,10 +11,14 @@ import time
 
 import pytest
 
-from base import integration_util  # noqa: I100,I202
-from base.populators import skip_without_tool
-from .test_containerized_jobs import MulledJobTestCases  # noqa: I201
-from .test_job_environments import BaseJobEnvironmentIntegrationTestCase  # noqa: I201
+from galaxy.util import unicodify
+from galaxy_test.base.populators import (
+    DatasetPopulator,
+    skip_without_tool,
+)
+from galaxy_test.driver import integration_util
+from .test_containerized_jobs import MulledJobTestCases
+from .test_job_environments import BaseJobEnvironmentIntegrationTestCase
 
 PERSISTENT_VOLUME_NAME = 'pv-galaxy-integration-test'
 PERSISTENT_VOLUME_CLAIM_NAME = 'galaxy-pvc-integration-test'
@@ -91,37 +96,40 @@ def job_config(jobs_directory):
             <param id="k8s_persistent_volume_claims">jobs-directory-claim:$jobs_directory,tool-directory-claim:$tool_directory</param>
             <param id="k8s_config_path">$k8s_config_path</param>
             <param id="k8s_galaxy_instance_id">gx-short-id</param>
+            <param id="k8s_run_as_user_id">$$uid</param>
         </plugin>
         <plugin id="k8s_walltime_short" type="runner" load="galaxy.jobs.runners.kubernetes:KubernetesJobRunner">
             <param id="k8s_persistent_volume_claims">jobs-directory-claim:$jobs_directory,tool-directory-claim:$tool_directory</param>
             <param id="k8s_config_path">$k8s_config_path</param>
             <param id="k8s_galaxy_instance_id">gx-short-id</param>
             <param id="k8s_walltime_limit">10</param>
+            <param id="k8s_run_as_user_id">$$uid</param>
         </plugin>
         <plugin id="k8s_no_cleanup" type="runner" load="galaxy.jobs.runners.kubernetes:KubernetesJobRunner">
             <param id="k8s_persistent_volume_claims">jobs-directory-claim:$jobs_directory,tool-directory-claim:$tool_directory</param>
             <param id="k8s_config_path">$k8s_config_path</param>
             <param id="k8s_galaxy_instance_id">gx-short-id</param>
             <param id="k8s_cleanup_job">never</param>
+            <param id="k8s_run_as_user_id">$$uid</param>
         </plugin>
     </plugins>
     <destinations default="k8s_destination">
         <destination id="k8s_destination" runner="k8s">
-            <param id="limits_cpu">1.9</param>
+            <param id="limits_cpu">1.1</param>
             <param id="limits_memory">10M</param>
             <param id="docker_enabled">true</param>
             <param id="docker_default_container_id">busybox:ubuntu-14.04</param>
             <env id="SOME_ENV_VAR">42</env>
         </destination>
         <destination id="k8s_destination_walltime_short" runner="k8s_walltime_short">
-            <param id="limits_cpu">1.9</param>
+            <param id="limits_cpu">1.1</param>
             <param id="limits_memory">10M</param>
             <param id="docker_enabled">true</param>
             <param id="docker_default_container_id">busybox:ubuntu-14.04</param>
             <env id="SOME_ENV_VAR">42</env>
         </destination>
         <destination id="k8s_destination_no_cleanup" runner="k8s_no_cleanup">
-            <param id="limits_cpu">1.9</param>
+            <param id="limits_cpu">1.1</param>
             <param id="limits_memory">10M</param>
             <param id="docker_enabled">true</param>
             <param id="docker_default_container_id">busybox:ubuntu-14.04</param>
@@ -146,11 +154,22 @@ def job_config(jobs_directory):
     return Config(job_conf.name)
 
 
+class KubernetesDatasetPopulator(DatasetPopulator):
+
+    def wait_for_history(self, *args, **kwargs):
+        try:
+            super().wait_for_history(*args, **kwargs)
+        except AssertionError:
+            print("Kubernetes status:\n %s" % unicodify(subprocess.check_output(['kubectl', 'describe', 'nodes'])))
+            raise
+
+
 @integration_util.skip_unless_kubernetes()
 class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, MulledJobTestCases):
 
     def setUp(self):
-        super(BaseKubernetesIntegrationTestCase, self).setUp()
+        super().setUp()
+        self.dataset_populator = KubernetesDatasetPopulator(self.galaxy_interactor)
         self.history_id = self.dataset_populator.new_history()
 
     @classmethod
@@ -171,7 +190,7 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
             claim_obj.setup()
             cls.persistent_volume_claims.append(claim_obj)
         cls.job_config = job_config(jobs_directory=cls.jobs_directory)
-        super(BaseKubernetesIntegrationTestCase, cls).setUpClass()
+        super().setUpClass()
 
     @classmethod
     def tearDownClass(cls):
@@ -179,10 +198,12 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
             claim.teardown()
         for volume in cls.persistent_volumes:
             volume.teardown()
-        super(BaseKubernetesIntegrationTestCase, cls).tearDownClass()
+        super().tearDownClass()
 
     @classmethod
-    def handle_galaxy_config_kwds(cls, config, ):
+    def handle_galaxy_config_kwds(cls, config):
+        # TODO: implement metadata setting as separate job, as service or side-car
+        config['retry_metadata_internally'] = True
         config["jobs_directory"] = cls.jobs_directory
         config["file_path"] = cls.jobs_directory
         config["job_config_file"] = cls.job_config.path
@@ -194,6 +215,17 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
     def test_job_environment(self):
         job_env = self._run_and_get_environment_properties()
         assert job_env.some_env == '42'
+
+    @staticmethod
+    def _wait_for_external_state(sa_session, job, expected):
+        # Not checking the state here allows the change from queued to running to overwrite
+        # the change from queued to deleted_new in the API thread - this is a problem because
+        # the job will still run. See issue https://github.com/galaxyproject/galaxy/issues/4960.
+        max_tries = 60
+        while max_tries > 0 and job.job_runner_external_id is None or job.state != expected:
+            sa_session.refresh(job)
+            time.sleep(1)
+            max_tries -= 1
 
     @skip_without_tool('cat_data_and_sleep')
     def test_kill_process(self):
@@ -213,23 +245,14 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
 
             app = self._app
             sa_session = app.model.context.current
-            external_id = None
-            state = False
+            job = sa_session.query(app.model.Job).get(app.security.decode_id(job_dict["id"]))
 
-            job = sa_session.query(app.model.Job).filter_by(tool_id="cat_data_and_sleep").one()
-            # Not checking the state here allows the change from queued to running to overwrite
-            # the change from queued to deleted_new in the API thread - this is a problem because
-            # the job will still run. See issue https://github.com/galaxyproject/galaxy/issues/4960.
-            max_tries = 60
-            while max_tries > 0 and external_id is None or state != app.model.Job.states.RUNNING:
-                sa_session.refresh(job)
-                assert not job.finished
-                external_id = job.job_runner_external_id
-                state = job.state
-                time.sleep(1)
-                max_tries -= 1
+            self._wait_for_external_state(sa_session, job, app.model.Job.states.RUNNING)
+            assert not job.finished
 
-            status = json.loads(subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json']))
+            external_id = job.job_runner_external_id
+            output = unicodify(subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json']))
+            status = json.loads(output)
             assert status['status']['active'] == 1
 
             delete_response = self.dataset_populator.cancel_job(job_dict["id"])
@@ -240,7 +263,43 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
             # The default job config removes jobs, didn't find a better way to check that the job doesn't exist anymore
             with pytest.raises(subprocess.CalledProcessError) as excinfo:
                 subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json'], stderr=subprocess.STDOUT)
-            assert "not found" in excinfo.value.output.decode()
+            assert "not found" in unicodify(excinfo.value.output)
+
+    @skip_without_tool('cat_data_and_sleep')
+    def test_external_job_delete(self):
+        with self.dataset_populator.test_history() as history_id:
+            hda1 = self.dataset_populator.new_dataset(history_id, content="1 2 3")
+            running_inputs = {
+                "input1": {"src": "hda", "id": hda1["id"]},
+                "sleep_time": 240,
+            }
+            running_response = self.dataset_populator.run_tool(
+                "cat_data_and_sleep",
+                running_inputs,
+                history_id,
+                assert_ok=False,
+            )
+            job_dict = running_response.json()["jobs"][0]
+
+            app = self._app
+            sa_session = app.model.context.current
+            job = sa_session.query(app.model.Job).get(app.security.decode_id(job_dict["id"]))
+
+            self._wait_for_external_state(sa_session, job, app.model.Job.states.RUNNING)
+
+            external_id = job.job_runner_external_id
+            output = unicodify(subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json']))
+            status = json.loads(output)
+            assert status['status']['active'] == 1
+
+            output = unicodify(subprocess.check_output(['kubectl', 'delete', 'job', external_id, '-o', 'name']))
+            assert 'job.batch/%s' % external_id in output
+
+            result = self.dataset_populator.wait_for_tool_run(run_response=running_response, history_id=history_id,
+                                                              assert_ok=False).json()
+            details = self.dataset_populator.get_job_details(result['jobs'][0]['id'], full=True).json()
+
+            assert details['state'] == app.model.Job.states.ERROR, details
 
     @skip_without_tool('job_properties')
     def test_exit_code_127(self):
@@ -291,7 +350,8 @@ class BaseKubernetesIntegrationTestCase(BaseJobEnvironmentIntegrationTestCase, M
         job_dict = running_response["jobs"][0]
         job = self.galaxy_interactor.get("jobs/%s" % job_dict['id'], admin=True).json()
         external_id = job['external_id']
-        status = json.loads(subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json']))
+        output = unicodify(subprocess.check_output(['kubectl', 'get', 'job', external_id, '-o', 'json']))
+        status = json.loads(output)
         assert 'active' not in status['status']
 
     @skip_without_tool('create_2')

@@ -15,6 +15,15 @@ TOOL_XML_1 = """
     <xrefs>
         <xref type="bio.tools">bwa</xref>
     </xrefs>
+    <creator>
+        <person
+            givenName="Björn"
+            familyName="Grüning"
+            identifier="http://orcid.org/0000-0002-3079-6586" />
+        <organization
+            url="https://galaxyproject.org/iuc/"
+            name="Galaxy IUC" />
+    </creator>
     <version_command interpreter="python">bwa.py --version</version_command>
     <parallelism method="multi" split_inputs="input1" split_mode="to_size" split_size="1" merge_outputs="out_file1" />
     <command interpreter="python">bwa.py --arg1=42</command>
@@ -63,6 +72,21 @@ TOOL_WITH_TOKEN = r"""
 @NESTED_TOKEN@
     </command>
 </tool>
+"""
+
+TOOL_WTIH_TOKEN_FROM_MACRO_FILE = r"""
+<tool id="tool_with_token" name="Token" version="1">
+    <macros>
+        <import>macros.xml</import>
+    </macros>
+    <command detect_errors="exit_code"><![CDATA[@CATS@]]></command>
+</tool>
+"""
+
+MACRO_CONTENTS = r"""<?xml version="1.0"?>
+<macros>
+    <token name="@CATS@">cat   </token>
+</macros>
 """
 
 TOOL_WITH_RECURSIVE_TOKEN = r"""
@@ -181,17 +205,24 @@ class BaseLoaderTestCase(unittest.TestCase):
     def _tool_source(self):
         return self._get_tool_source()
 
-    def _get_tool_source(self, source_file_name=None, source_contents=None):
+    def _get_tool_source(self, source_file_name=None, source_contents=None, macro_contents=None):
+        macro_path = None
         if source_file_name is None:
             source_file_name = self.source_file_name
         if source_contents is None:
             source_contents = self.source_contents
         if not os.path.isabs(source_file_name):
             path = os.path.join(self.temp_directory, source_file_name)
-            open(path, "w").write(source_contents)
+            with open(path, "w") as out:
+                out.write(source_contents)
+            if macro_contents:
+                macro_path = os.path.join(self.temp_directory, 'macros.xml')
+                with open(macro_path, "w") as out:
+                    out.write(macro_contents)
+
         else:
             path = source_file_name
-        tool_source = get_tool_source(path)
+        tool_source = get_tool_source(path, macro_paths=[macro_path])
         return tool_source
 
 
@@ -355,9 +386,26 @@ class XmlLoaderTestCase(BaseLoaderTestCase):
         assert command
         assert '@' not in command
 
+    def test_token_significant_whitespace(self):
+        tool_source = self._get_tool_source(source_contents=TOOL_WTIH_TOKEN_FROM_MACRO_FILE, macro_contents=MACRO_CONTENTS)
+        command = tool_source.parse_command()
+        assert command == 'cat   '
+        assert '@' not in command
+
     def test_recursive_token(self):
         with self.assertRaises(Exception):
             self._get_tool_source(source_contents=TOOL_WITH_RECURSIVE_TOKEN)
+
+    def test_creator(self):
+        creators = self._tool_source.parse_creator()
+        assert len(creators) == 2
+        creator1 = creators[0]
+        assert creator1["class"] == "Person"
+        assert creator1["identifier"] == "http://orcid.org/0000-0002-3079-6586"
+
+        creator2 = creators[1]
+        assert creator2["class"] == "Organization"
+        assert creator2["name"] == "Galaxy IUC"
 
 
 class YamlLoaderTestCase(BaseLoaderTestCase):
@@ -561,6 +609,47 @@ class BuildListToolLoaderTestCase(BaseLoaderTestCase):
         assert tool_module[1] == "BuildListCollectionTool"
 
 
+class ExpressionTestToolLoaderTestCase(BaseLoaderTestCase):
+    source_file_name = os.path.join(galaxy_directory(), "test/functional/tools/expression_null_handling_boolean.xml")
+    source_contents = None
+
+    def test_test(self):
+        test_dicts = self._tool_source.parse_tests_to_dict()['tests']
+        assert len(test_dicts) == 3
+        test_dict_0 = test_dicts[0]
+        assert 'outputs' in test_dict_0, test_dict_0
+        outputs = test_dict_0['outputs']
+        output0 = outputs[0]
+        assert 'object' in output0['attributes']
+        assert output0['attributes']['object'] is True
+
+        test_dict_1 = test_dicts[1]
+        assert 'outputs' in test_dict_1, test_dict_1
+        outputs = test_dict_1['outputs']
+        output0 = outputs[0]
+        assert 'object' in output0['attributes']
+        assert output0['attributes']['object'] is False
+
+        test_dict_2 = test_dicts[2]
+        assert 'outputs' in test_dict_2, test_dict_2
+        outputs = test_dict_2['outputs']
+        output0 = outputs[0]
+        assert 'object' in output0['attributes']
+        assert output0['attributes']['object'] is None
+
+
+class ExpressionOutputDataToolLoaderTestCase(BaseLoaderTestCase):
+    source_file_name = os.path.join(galaxy_directory(), "test/functional/tools/expression_pick_larger_file.xml")
+    source_contents = None
+
+    def test_output_parsing(self):
+        outputs, _ = self._tool_source.parse_outputs(None)
+        assert 'larger_file' in outputs
+        tool_output = outputs['larger_file']
+        assert tool_output.format == "data"
+        assert tool_output.from_expression == "output"
+
+
 class SpecialToolLoaderTestCase(BaseLoaderTestCase):
     source_file_name = os.path.join(galaxy_directory(), "lib/galaxy/tools/imp_exp/exp_history_to_archive.xml")
     source_contents = None
@@ -618,6 +707,16 @@ class CollectionOutputYamlTestCase(BaseLoaderTestCase):
         assert len(output_collections) == 1
 
 
+class EnvironmentVariablesTestCase(BaseLoaderTestCase):
+    source_file_name = os.path.join(galaxy_directory(), "test/functional/tools/environment_variables.xml")
+    source_contents = None
+
+    def test_tests(self):
+        tests_dict = self._tool_source.parse_tests_to_dict()
+        tests = tests_dict["tests"]
+        assert len(tests) == 1
+
+
 class ExpectationsTestCase(BaseLoaderTestCase):
     source_file_name = os.path.join(galaxy_directory(), "test/functional/tools/detect_errors.xml")
     source_contents = None
@@ -629,6 +728,18 @@ class ExpectationsTestCase(BaseLoaderTestCase):
         test_0 = tests[0]
         assert len(test_0["stderr"]) == 1
         assert len(test_0["stdout"]) == 2
+
+
+class ExpectationsCommandVersionTestCase(BaseLoaderTestCase):
+    source_file_name = os.path.join(galaxy_directory(), "test/functional/tools/job_properties.xml")
+    source_contents = None
+
+    def test_tests(self):
+        tests_dict = self._tool_source.parse_tests_to_dict()
+        tests = tests_dict["tests"]
+        assert len(tests) > 0
+        test_0 = tests[0]
+        assert len(test_0["command_version"]) == 1
 
 
 class QcStdioTestCase(BaseLoaderTestCase):

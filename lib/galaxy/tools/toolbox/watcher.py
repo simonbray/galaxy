@@ -67,7 +67,7 @@ class ToolFileEventHandler(FileSystemEventHandler):
                     self.tool_watcher.tool_file_ids[tool_file] = tool_id
 
 
-class ToolConfWatcher(object):
+class ToolConfWatcher:
 
     def __init__(self, reload_callback, tool_cache=None):
         self.paths = {}
@@ -90,7 +90,7 @@ class ToolConfWatcher(object):
     def shutdown(self):
         if self._active:
             self._active = False
-            if self.thread.isAlive():
+            if self.thread.is_alive():
                 self.exit.set()
                 self.thread.join()
             self.thread = None
@@ -98,9 +98,13 @@ class ToolConfWatcher(object):
 
     def check(self):
         """Check for changes in self.paths or self.cache and call the event handler."""
-        hashes = {key: None for key in self.paths.keys()}
+        hashes = {}
+        if self.cache:
+            self.cache.assert_hashes_initialized()
         while self._active and not self.exit.isSet():
             do_reload = False
+            drop_on_next_loop = set()
+            drop_now = set()
             with self._lock:
                 paths = list(self.paths.keys())
             for path in paths:
@@ -115,22 +119,30 @@ class ToolConfWatcher(object):
                         else:
                             continue
                     new_mod_time = os.path.getmtime(path)
-                    if new_mod_time > mod_time:
+                    # mod_time can be None if a non-required config was just created
+                    if not mod_time:
+                        self.paths[path] = new_mod_time
+                        log.debug("The file '%s' has been created.", path)
+                        do_reload = True
+                    elif new_mod_time > mod_time:
                         new_hash = md5_hash_file(path)
                         if hashes[path] != new_hash:
                             self.paths[path] = new_mod_time
                             hashes[path] = new_hash
                             log.debug("The file '%s' has changes.", path)
                             do_reload = True
-                except IOError:
+                except OSError:
                     # in rare cases `path` may be deleted between `os.path.exists` calls
                     # and reading the file from the filesystem. We do not want the watcher
                     # thread to die in these cases.
-                    try:
-                        del hashes[path]
+                    if path in drop_now:
+                        log.warning("'%s' could not be read, removing from watched files", path)
                         del paths[path]
-                    except KeyError:
-                        pass
+                        if path in hashes:
+                            del hashes[path]
+                    else:
+                        log.debug("'%s could not be read", path)
+                        drop_on_next_loop.add(path)
                     if self.cache:
                         self.cache.cleanup()
                     do_reload = True
@@ -140,6 +152,8 @@ class ToolConfWatcher(object):
                     do_reload = True
             if do_reload:
                 self.reload_callback()
+            drop_now = drop_on_next_loop
+            drop_on_next_loop = set()
             self.exit.wait(1)
 
     def monitor(self, path):
@@ -156,26 +170,20 @@ class ToolConfWatcher(object):
 class ToolWatcher(BaseWatcher):
 
     def __init__(self, observer_class, even_handler_class, toolbox):
-        super(ToolWatcher, self).__init__(observer_class, even_handler_class)
+        super().__init__(observer_class, even_handler_class)
         self.toolbox = toolbox
         self.tool_file_ids = {}
         self.tool_dir_callbacks = {}
-        self.monitored_dirs = {}
-
-    def monitor(self, dir):
-        self.observer.schedule(self.event_handler, dir, recursive=False)
 
     def watch_file(self, tool_file, tool_id):
         tool_file = os.path.abspath(tool_file)
         self.tool_file_ids[tool_file] = tool_id
         tool_dir = os.path.dirname(tool_file)
         if tool_dir not in self.monitored_dirs:
-            self.monitored_dirs[tool_dir] = tool_dir
             self.monitor(tool_dir)
 
     def watch_directory(self, tool_dir, callback):
         tool_dir = os.path.abspath(tool_dir)
         self.tool_dir_callbacks[tool_dir] = callback
         if tool_dir not in self.monitored_dirs:
-            self.monitored_dirs[tool_dir] = tool_dir
             self.monitor(tool_dir)

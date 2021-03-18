@@ -3,13 +3,12 @@
 ...using common defaults and configuration mechanisms.
 """
 import os
+import shlex
 
-from six.moves import shlex_quote
-
-from .commands import argv_to_str
+from galaxy.util.commands import argv_to_str
 
 DEFAULT_DOCKER_COMMAND = "docker"
-DEFAULT_SUDO = True
+DEFAULT_SUDO = False
 DEFAULT_SUDO_COMMAND = "sudo"
 DEFAULT_HOST = None
 DEFAULT_VOLUME_MOUNT_TYPE = "rw"
@@ -69,7 +68,7 @@ def build_docker_cache_command(
 ):
     inspect_image_command = command_shell("inspect", [image], **kwds)
     pull_image_command = command_shell("pull", [image], **kwds)
-    cache_command = "%s > /dev/null 2>&1\n[ $? -ne 0 ] && %s > /dev/null 2>&1\n" % (inspect_image_command, pull_image_command)
+    cache_command = f"{inspect_image_command} > /dev/null 2>&1\n[ $? -ne 0 ] && {pull_image_command} > /dev/null 2>&1\n"
     return cache_command
 
 
@@ -106,10 +105,10 @@ def build_docker_run_command(
     interactive=False,
     terminal=False,
     tag=None,
-    volumes=[],
+    volumes=None,
     volumes_from=DEFAULT_VOLUMES_FROM,
     memory=DEFAULT_MEMORY,
-    env_directives=[],
+    env_directives=None,
     working_directory=DEFAULT_WORKING_DIRECTORY,
     name=None,
     net=DEFAULT_NET,
@@ -123,6 +122,8 @@ def build_docker_run_command(
     guest_ports=False,
     container_name=None
 ):
+    env_directives = env_directives or []
+    volumes = volumes or []
     command_parts = _docker_prefix(
         docker_cmd=docker_cmd,
         sudo=sudo,
@@ -149,24 +150,18 @@ def build_docker_run_command(
     if container_name:
         command_parts.extend(["--name", container_name])
     for volume in volumes:
-        # These are environment variable expansions so we don't quote these.
-        volume_str = str(volume)
-        if "$" not in volume_str:
-            volume_for_cmd_line = shlex_quote(volume_str)
-        else:
-            # e.g. $_GALAXY_JOB_TMP_DIR:$_GALAXY_JOB_TMP_DIR:rw so don't single quote.
-            volume_for_cmd_line = '"%s"' % volume_str
-        command_parts.extend(["-v", volume_for_cmd_line])
+        command_parts.extend(["-v", str(volume)])
     if volumes_from:
-        command_parts.extend(["--volumes-from", shlex_quote(str(volumes_from))])
+        command_parts.extend(["--volumes-from", shlex.quote(str(volumes_from))])
     if memory:
-        command_parts.extend(["-m", shlex_quote(memory)])
+        command_parts.extend(["-m", shlex.quote(memory)])
+    command_parts.extend(["--cpus", '${GALAXY_SLOTS:-1}'])
     if name:
-        command_parts.extend(["--name", shlex_quote(name)])
+        command_parts.extend(["--name", shlex.quote(name)])
     if working_directory:
-        command_parts.extend(["-w", shlex_quote(working_directory)])
+        command_parts.extend(["-w", shlex.quote(working_directory)])
     if net:
-        command_parts.extend(["--net", shlex_quote(net)])
+        command_parts.extend(["--net", shlex.quote(net)])
     if auto_rm:
         command_parts.append("--rm")
     if run_extra_arguments:
@@ -183,22 +178,24 @@ def build_docker_run_command(
         command_parts.extend(["--user", user])
     full_image = image
     if tag:
-        full_image = "%s:%s" % (full_image, tag)
-    command_parts.append(shlex_quote(full_image))
+        full_image = f"{full_image}:{tag}"
+    command_parts.append(shlex.quote(full_image))
     command_parts.append(container_command)
     return " ".join(command_parts)
 
 
-def command_list(command, command_args=[], **kwds):
+def command_list(command, command_args=None, **kwds):
     """Return Docker command as an argv list."""
+    command_args = command_args or []
     command_parts = _docker_prefix(**kwds)
     command_parts.append(command)
     command_parts.extend(command_args)
     return command_parts
 
 
-def command_shell(command, command_args=[], **kwds):
+def command_shell(command, command_args=None, **kwds):
     """Return Docker command as a string for a shell or command-list."""
+    command_args = command_args or []
     cmd = command_list(command, command_args, **kwds)
     to_str = kwds.get("to_str", True)
     if to_str:
@@ -225,6 +222,12 @@ def _docker_prefix(
 
 
 def parse_port_text(port_text):
+    """
+
+    >>> slurm_ports = parse_port_text("8888/tcp -> 0.0.0.0:32769")
+    >>> slurm_ports[8888]['host']
+    '0.0.0.0'
+    """
     ports = None
     if port_text is not None:
         ports = {}

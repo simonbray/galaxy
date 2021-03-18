@@ -5,11 +5,11 @@ Use this as the import interface for cwltool and just call
 functionality at runtime.
 """
 import re
+import warnings
 
-try:
-    import requests
-except ImportError:
-    requests = None
+warnings.filterwarnings("ignore", message=r"[\n.]DEPRECATION: Python 2", module="cwltool")
+
+import requests
 
 try:
     from cwltool import (
@@ -19,42 +19,76 @@ try:
         process,
         pathmapper,
     )
-except (ImportError, SyntaxError):
-    # Drop SyntaxError once cwltool supports Python 3
-    main = None
-    workflow = None
-    job = None
-    process = None
-    pathmapper = None
+except ImportError:
+    main = None  # type: ignore
+    workflow = None  # type: ignore
+    job = None  # type: ignore
+    process = None  # type: ignore
+    pathmapper = None  # type: ignore
 
 try:
-    from cwltool.context import LoadingContext  # Introduced in cwltool 1.0.20180615183820
-except (ImportError, SyntaxError):
-    LoadingContext = None
+    from cwltool.context import (
+        getdefault,
+        LoadingContext,
+        RuntimeContext,
+    )
+    from cwltool.job import relink_initialworkdir
+    from cwltool.stdfsaccess import StdFsAccess
+except ImportError:
+    getdefault = None  # type: ignore
+    LoadingContext = None  # type: ignore
+    relink_initialworkdir = None  # type: ignore
+    RuntimeContext = None  # type: ignore
+    StdFsAccess = None  # type: ignore
 
 try:
     from cwltool import load_tool
-except (ImportError, SyntaxError):
-    load_tool = None
+    from cwltool.load_tool import (
+        default_loader,
+        resolve_and_validate_document,
+    )
+except ImportError:
+    default_loader = None  # type: ignore
+    load_tool = None  # type: ignore
+    resolve_and_validate_document = None  # type: ignore
+
+try:
+    from cwltool import command_line_tool
+    command_line_tool.ACCEPTLIST_RE = command_line_tool.ACCEPTLIST_EN_RELAXED_RE
+except ImportError:
+    command_line_tool = None  # type: ignore
+
+try:
+    from cwltool.load_tool import resolve_and_validate_document
+except ImportError:
+    resolve_and_validate_document = None  # type: ignore
+
+try:
+    from cwltool import command_line_tool
+    command_line_tool.ACCEPTLIST_RE = command_line_tool.ACCEPTLIST_EN_RELAXED_RE
+except ImportError:
+    command_line_tool = None  # type: ignore
 
 try:
     import shellescape
 except ImportError:
-    shellescape = None
+    shellescape = None  # type: ignore
 
 try:
     import schema_salad
-except (ImportError, SyntaxError):
-    # Drop SyntaxError once schema_salad supports Python 3
-    schema_salad = None
-
-try:
-    from schema_salad import ref_resolver
-except (ImportError, SyntaxError):
-    ref_resolver = None
-
+    from schema_salad import (
+        ref_resolver,
+        sourceline,
+    )
+except ImportError:
+    schema_salad = None  # type: ignore
+    ref_resolver = None  # type: ignore
+    sourceline = None  # type: ignore
 
 needs_shell_quoting = re.compile(r"""(^$|[\s|&;()<>\'"$@])""").search
+
+# if set to True, file format checking is not performed.
+beta_relaxed_fmt_check = True
 
 
 def ensure_cwltool_available():
@@ -66,8 +100,8 @@ def ensure_cwltool_available():
         message = "This feature requires cwltool and dependencies to be available, they are not."
         if main is None:
             message += " cwltool is not unavailable."
-        elif load_tool is None:
-            message += " cwltool.load_tool is unavailable - cwltool version is too old."
+        elif resolve_and_validate_document is None:
+            message += " cwltool.load_tool.resolve_and_validate_document is unavailable - cwltool version is too old."
         if requests is None:
             message += " Library 'requests' unavailable."
         if shellescape is None:
@@ -78,15 +112,22 @@ def ensure_cwltool_available():
 
 
 __all__ = (
-    'main',
-    'ref_resolver',
+    'default_loader',
+    'ensure_cwltool_available',
+    'getdefault',
     'load_tool',
     'LoadingContext',
-    'workflow',
-    'process',
+    'main',
+    'needs_shell_quoting',
     'pathmapper',
-    'ensure_cwltool_available',
+    'process',
+    'ref_resolver',
+    'relink_initialworkdir',
+    'resolve_and_validate_document',
+    'RuntimeContext',
     'schema_salad',
     'shellescape',
-    'needs_shell_quoting',
+    'sourceline',
+    'StdFsAccess',
+    'workflow',
 )

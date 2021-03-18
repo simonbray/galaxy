@@ -17,6 +17,8 @@ variables:
         - ~/.cache/yarn
   install_tox: &install_tox
     run: sudo pip install tox
+  install_ffprobe: &install_ffprobe
+    run: sudo apt-get update && sudo apt-get install ffmpeg -y
   set_workdir: &set_workdir
     working_directory: ~/repo
   requires_get_code: &requires_get_code
@@ -25,7 +27,7 @@ variables:
 jobs:
   get_code:
     docker:
-      - image: circleci/python:3.5
+      - image: circleci/python:3.6
     <<: *set_workdir
     steps:
       # Replace standard code checkout with shallow clone to speed things up.
@@ -81,69 +83,9 @@ jobs:
           key: v1-repo-{{ .Environment.CIRCLE_SHA1 }}
           paths:
             - ~/repo
-  py27_lint:
-    docker:
-      - image: circleci/python:2.7
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py27-lint
-  py27_unit:
-    docker:
-      - image: circleci/python:2.7
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py27-unit
-  py27_docstring:
-    docker:
-      - image: circleci/python:2.7
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py27-lint_docstring_include_list
-  py27_first_startup:
-    docker:
-      - image: circleci/python:2.7
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - run: sh scripts/common_startup.sh
-      - run: wget -q https://github.com/jmchilton/galaxy-downloads/raw/master/db_gx_rev_0127.sqlite
-      - run: mv db_gx_rev_0127.sqlite database/universe.sqlite
-      - run: sh manage_db.sh -c ./config/galaxy.yml.sample upgrade
-      - *install_tox
-      - run: tox -e py27-first_startup
-  py35_lint:
-    docker:
-      - image: circleci/python:3.5
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py35-lint
-  py35_unit:
-    docker:
-      - image: circleci/python:3.5
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py35-unit
-  py35_first_startup:
-    docker:
-      - image: circleci/python:3.5
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - *install_tox
-      - run: tox -e py35-first_startup
   validate_test_tools:
     docker:
-      - image: circleci/python:3.5
+      - image: circleci/python:3.6
     <<: *set_workdir
     steps:
       - *restore_repo_cache
@@ -153,65 +95,45 @@ jobs:
       - run: tox -e validate_test_tools
   test_galaxy_packages:
     docker:
-      - image: circleci/python:3.5
+      - image: circleci/python:3.6
     <<: *set_workdir
     steps:
       - *restore_repo_cache
       - *install_tox
+      - *install_ffprobe
       - run: tox -e test_galaxy_packages
-  check_py3_compatibility:
-    docker:
-      - image: circleci/python:3.5
-    <<: *set_workdir
-    steps:
-      - *restore_repo_cache
-      - run: sudo apt-get update
-      - run: sudo apt-get install -y ack-grep
-      - *install_tox
-      - run: tox -e check_py3_compatibility
   js_unit:
     docker:
-      - image: circleci/node:10-browsers
+      - image: circleci/node:12-browsers
     <<: *set_workdir
     steps:
       - *restore_yarn_cache
       - run: cd client && yarn install --frozen-lockfile
       - *save_yarn_cache
-      - run: cd client && yarn run build
-      - run: cd client && yarn run test
+      - run:
+          name: Build client
+          command: cd client && yarn run build
+          environment:
+              NODE_OPTIONS: --max_old_space_size=4096
+      - run: cd client && yarn run qunit
   js_lint:
     docker:
-      - image: circleci/node:10-browsers
+      - image: circleci/node:12-browsers
     <<: *set_workdir
     steps:
       - *restore_yarn_cache
       - run: cd client && yarn install --frozen-lockfile
       - *save_yarn_cache
       - run: cd client && yarn run eslint
+      - run: cd client && yarn run prettier-check
 workflows:
   version: 2
   get_code_and_test:
     jobs:
       - get_code
-      - py27_lint:
-          <<: *requires_get_code
-      - py27_unit:
-          <<: *requires_get_code
-      - py27_first_startup:
-          <<: *requires_get_code
-      - py27_docstring:
-          <<: *requires_get_code
-      - py35_lint:
-          <<: *requires_get_code
-      - py35_unit:
-          <<: *requires_get_code
-      - py35_first_startup:
-          <<: *requires_get_code
       - test_galaxy_packages:
           <<: *requires_get_code
       - validate_test_tools:
-          <<: *requires_get_code
-      - check_py3_compatibility:
           <<: *requires_get_code
       - js_unit:
           <<: *requires_get_code

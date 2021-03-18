@@ -1,7 +1,7 @@
 import json
 
 
-class Node(object):
+class Node:
     """Node class of PhyloTree, which represents a CLAUDE in a phylogenetic tree"""
 
     def __init__(self, nodeName, **kwargs):
@@ -31,10 +31,10 @@ class Node(object):
     def toJson(self):
         """Converts the data in the node to a dict representation of json"""
         thisJson = {
-            "name"      : self.name,
-            "id"        : self.id,
-            "depth"     : self.depth,
-            "dist"      : self.length
+            "name": self.name,
+            "id": self.id,
+            "depth": self.depth,
+            "dist": self.length
         }
         thisJson = self.addChildrenToJson(thisJson)
         thisJson = self.addMiscToJson(thisJson)
@@ -57,7 +57,7 @@ class Node(object):
         return jsonDict
 
 
-class PhyloTree(object):
+class PhyloTree:
     """Standardized python based class to represent the phylogenetic tree parsed from different
     phylogenetic file formats."""
 
@@ -100,7 +100,7 @@ class PhyloTree(object):
         return jsonTree
 
 
-class Base_Parser(object):
+class Base_Parser:
     """Base parsers contain all the methods to handle phylogeny tree creation and
     converting the data to json that all parsers should have"""
 

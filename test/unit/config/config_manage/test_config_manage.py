@@ -1,4 +1,3 @@
-
 import os
 import shutil
 import tempfile
@@ -60,7 +59,7 @@ def test_shed_conversion_1607_prefix():
         assert "uwsgi" in config
         uwsgi_config = config["uwsgi"]
         assert "module" not in uwsgi_config
-        assert uwsgi_config["mount"].startswith("/shed=galaxy.")
+        assert uwsgi_config["mount"].startswith("/shed=tool_shed.webapp")
 
 
 def test_allow_library_path_paste_conversion():
@@ -81,7 +80,17 @@ def test_build_uwsgi_yaml():
         config_dir.manage_cli(["build_uwsgi_yaml"])
 
 
-class _TestConfigDirectory(object):
+def test_validate_simple_config():
+    with _config_directory("simple") as config_dir:
+        config_dir.manage_cli(["validate", "galaxy"])
+
+
+def test_validate_embedded_config():
+    with _config_directory("embedded") as config_dir:
+        config_dir.manage_cli(["validate", "galaxy"])
+
+
+class _TestConfigDirectory:
 
     def __init__(self, base_name):
         temp_directory = tempfile.mkdtemp()
@@ -112,7 +121,7 @@ class _TestConfigDirectory(object):
         return open(os.path.join(self.temp_directory, path), *args)
 
     def assert_moved(self, from_path, to_path):
-        with open(os.path.join(self.source_dir, from_path), "r") as f:
+        with open(os.path.join(self.source_dir, from_path)) as f:
             source_contents = f.read()
 
         with self.open(to_path, "r") as f:

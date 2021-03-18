@@ -21,6 +21,17 @@ def test_import_export_history():
     _assert_simple_cat_job_imported(imported_history)
 
 
+def test_import_export_history_failed_job():
+    """Test a simple job import/export, make sure state is maintained correctly."""
+    app = _mock_app()
+
+    u, h, d1, d2, j = _setup_simple_cat_job(app, state='error')
+
+    imported_history = _import_export_history(app, h, export_files="copy")
+
+    _assert_simple_cat_job_imported(imported_history, state='error')
+
+
 def test_import_export_bag_archive():
     """Test a simple job import/export using a BagIt archive."""
     dest_parent = mkdtemp()
@@ -129,7 +140,7 @@ def test_import_export_library():
     all_lddas = sa_session.query(model.LibraryDatasetDatasetAssociation).all()
     assert len(all_lddas) == 2, len(all_lddas)
 
-    new_library = [l for l in all_libraries if l.id != library.id][0]
+    new_library = [lib for lib in all_libraries if lib.id != library.id][0]
     assert new_library.name == "my library 1"
     assert new_library.description == "my library description"
     assert new_library.synopsis == "my synopsis"
@@ -147,7 +158,7 @@ def test_finalize_job_state():
     app, h, temp_directory, import_history = _setup_simple_export({"for_edit": False})
     u = h.user
 
-    with open(os.path.join(temp_directory, store.ATTRS_FILENAME_JOBS), "r") as f:
+    with open(os.path.join(temp_directory, store.ATTRS_FILENAME_JOBS)) as f:
         job_attrs = json.load(f)
 
     for job in job_attrs:
@@ -172,7 +183,7 @@ def test_import_export_edit_datasets():
 
     # Fabric editing metadata...
     datasets_metadata_path = os.path.join(temp_directory, store.ATTRS_FILENAME_DATASETS)
-    with open(datasets_metadata_path, "r") as f:
+    with open(datasets_metadata_path) as f:
         datasets_metadata = json.load(f)
 
     datasets_metadata[0]["name"] = "my new name 0"
@@ -222,7 +233,7 @@ def test_import_export_edit_collection():
     # Fabric editing metadata for collection...
     collections_metadata_path = os.path.join(temp_directory, store.ATTRS_FILENAME_COLLECTIONS)
     datasets_metadata_path = os.path.join(temp_directory, store.ATTRS_FILENAME_DATASETS)
-    with open(collections_metadata_path, "r") as f:
+    with open(collections_metadata_path) as f:
         hdcas_metadata = json.load(f)
 
     assert len(hdcas_metadata) == 1
@@ -326,7 +337,7 @@ def test_import_export_composite_datasets():
     composite_sub_dir = os.path.join(root_extra_files_path, "parent_dir")
     child_files = os.listdir(composite_sub_dir)
     assert len(child_files) == 1
-    with open(os.path.join(composite_sub_dir, child_files[0]), "r") as f:
+    with open(os.path.join(composite_sub_dir, child_files[0])) as f:
         contents = f.read()
         assert contents == "cool composite file"
 
@@ -402,36 +413,40 @@ def _setup_simple_export(export_kwds):
     return app, h, temp_directory, import_history
 
 
-def _assert_simple_cat_job_imported(imported_history):
+def _assert_simple_cat_job_imported(imported_history, state='ok'):
     assert imported_history.name == "imported from archive: Test History"
 
     datasets = imported_history.datasets
     assert len(datasets) == 2
+    assert datasets[0].state == datasets[1].state == state
     imported_job = datasets[1].creating_job
     assert imported_job
+    assert imported_job.state == state
     assert imported_job.output_datasets
     assert imported_job.output_datasets[0].dataset == datasets[1]
 
     assert imported_job.input_datasets
     assert imported_job.input_datasets[0].dataset == datasets[0]
 
-    with open(datasets[0].file_name, "r") as f:
+    with open(datasets[0].file_name) as f:
         assert f.read().startswith("chr1    4225    19670")
-    with open(datasets[1].file_name, "r") as f:
+    with open(datasets[1].file_name) as f:
         assert f.read().startswith("chr1\t147962192\t147962580\tNM_005997_cds_0_0_chr1_147962193_r\t0\t-")
 
 
-def _setup_simple_cat_job(app):
+def _setup_simple_cat_job(app, state='ok'):
     sa_session = app.model.context
 
     u = model.User(email="collection@example.com", password="password")
     h = model.History(name="Test History", user=u)
 
     d1, d2 = _create_datasets(sa_session, h, 2)
+    d1.state = d2.state = state
 
     j = model.Job()
     j.user = u
     j.tool_id = "cat1"
+    j.state = state
 
     j.add_input_dataset("input1", d1)
     j.add_output_dataset("out_file1", d2)

@@ -8,7 +8,13 @@ import logging
 import socket
 import sys
 import threading
+import time
 from inspect import ismodule
+try:
+    from math import inf
+except ImportError:
+    # python 2 doesn't have math.inf, but can use float('inf')
+    inf = float('inf')
 
 from kombu import (
     Consumer,
@@ -17,31 +23,30 @@ from kombu import (
 )
 from kombu.mixins import ConsumerProducerMixin
 from kombu.pools import (
-    connections,
     producers,
 )
-from six.moves import reload_module
 
 import galaxy.queues
 from galaxy import util
+from galaxy.config import reload_config_options
 
 logging.getLogger('kombu').setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
 
-def send_local_control_task(app, task, kwargs=None):
+def send_local_control_task(app, task, get_response=False, kwargs=None):
     """
     This sends a message to the process-local control worker, which is useful
     for one-time asynchronous tasks like recalculating user disk usage.
     """
     if kwargs is None:
         kwargs = {}
-    log.info("Queuing async task %s for %s." % (task, app.config.server_name))
+    log.info("Queuing {} task {} for {}.".format("sync" if get_response else "async", task, app.config.server_name))
     payload = {'task': task,
                'kwargs': kwargs}
-    routing_key = 'control.%s@%s' % (app.config.server_name, socket.gethostname())
+    routing_key = f'control.{app.config.server_name}@{socket.gethostname()}'
     control_task = ControlTask(app.queue_worker)
-    control_task.send_task(payload, routing_key, local=True, get_response=False)
+    return control_task.send_task(payload, routing_key, local=True, get_response=get_response)
 
 
 def send_control_task(app, task, noop_self=False, get_response=False, routing_key='control.*', kwargs=None):
@@ -64,7 +69,7 @@ def send_control_task(app, task, noop_self=False, get_response=False, routing_ke
     return control_task.send_task(payload=payload, routing_key=routing_key, get_response=get_response)
 
 
-class ControlTask(object):
+class ControlTask:
 
     def __init__(self, queue_worker):
         self.queue_worker = queue_worker
@@ -108,7 +113,7 @@ class ControlTask(object):
             callback_queue = [self.callback_queue]
             self.correlation_id = uuid()
         try:
-            with producers[self.connection].acquire(block=True) as producer:
+            with producers[self.connection].acquire(block=True, timeout=10) as producer:
                 producer.publish(
                     payload,
                     exchange=None if local else self.exchange,
@@ -117,6 +122,7 @@ class ControlTask(object):
                     reply_to=reply_to,
                     correlation_id=self.correlation_id,
                     retry=True,
+                    headers={'epoch': time.time()},
                 )
             if get_response:
                 with Consumer(self.connection, on_message=self.on_response, queues=callback_queue, no_ack=True):
@@ -156,19 +162,19 @@ def reload_tool(app, **kwargs):
         log.error("Reload tool invoked without tool id.")
 
 
-def reload_toolbox(app, **kwargs):
+def reload_toolbox(app, save_integrated_tool_panel=True, **kwargs):
     reload_timer = util.ExecutionTimer()
     log.debug("Executing toolbox reload on '%s'", app.config.server_name)
     reload_count = app.toolbox._reload_count
     if hasattr(app, 'tool_cache'):
         app.tool_cache.cleanup()
-    _get_new_toolbox(app)
+    _get_new_toolbox(app, save_integrated_tool_panel)
     app.toolbox._reload_count = reload_count + 1
     send_local_control_task(app, 'rebuild_toolbox_search_index')
     log.debug("Toolbox reload %s", reload_timer)
 
 
-def _get_new_toolbox(app):
+def _get_new_toolbox(app, save_integrated_tool_panel=True):
     """
     Generate a new toolbox, by constructing a toolbox from the config files,
     and then adding pre-existing data managers from the old toolbox to the new toolbox.
@@ -178,16 +184,15 @@ def _get_new_toolbox(app):
     if hasattr(app, 'tool_shed_repository_cache'):
         app.tool_shed_repository_cache.rebuild()
     tool_configs = app.config.tool_configs
-    if app.config.migrated_tools_config not in tool_configs:
-        tool_configs.append(app.config.migrated_tools_config)
 
-    new_toolbox = tools.ToolBox(tool_configs, app.config.tool_path, app)
+    new_toolbox = tools.ToolBox(tool_configs, app.config.tool_path, app, save_integrated_tool_panel=save_integrated_tool_panel)
     new_toolbox.data_manager_tools = app.toolbox.data_manager_tools
     app.datatypes_registry.load_datatype_converters(new_toolbox, use_cached=True)
     app.datatypes_registry.load_external_metadata_tool(new_toolbox)
     load_lib_tools(new_toolbox)
     [new_toolbox.register_tool(tool) for tool in new_toolbox.data_manager_tools.values()]
     app.toolbox = new_toolbox
+    app.toolbox.persist_cache()
 
 
 def reload_data_managers(app, **kwargs):
@@ -214,9 +219,9 @@ def reload_display_application(app, **kwargs):
     app.datatypes_registry.reload_display_applications(display_application_ids)
 
 
-def reload_sanitize_whitelist(app):
-    log.debug("Executing reload sanitize whitelist control task.")
-    app.config.reload_sanitize_whitelist()
+def reload_sanitize_allowlist(app):
+    log.debug("Executing reload sanitize allowlist control task.")
+    app.config.reload_sanitize_allowlist()
 
 
 def recalculate_user_disk_usage(app, **kwargs):
@@ -242,8 +247,11 @@ def reload_tool_data_tables(app, **kwargs):
 
 
 def rebuild_toolbox_search_index(app, **kwargs):
-    if app.toolbox_search.index_count < app.toolbox._reload_count:
-        app.reindex_tool_search()
+    if app.is_webapp:
+        if app.toolbox_search.index_count < app.toolbox._reload_count:
+            app.reindex_tool_search()
+    else:
+        log.debug("App is not a webapp, not building a search index")
 
 
 def reload_job_rules(app, **kwargs):
@@ -254,12 +262,22 @@ def reload_job_rules(app, **kwargs):
             if ((name == rules_module_name or name.startswith(rules_module_name + '.'))
                     and ismodule(module)):
                 log.debug("Reloading job rules module: %s", name)
-                reload_module(module)
+                importlib.reload(module)
     log.debug("Job rules reloaded %s", reload_timer)
 
 
+def reload_core_config(app, **kwargs):
+    reload_config_options(app.config)
+
+
+def reload_tour(app, **kwargs):
+    path = kwargs.get('path')
+    app.tour_registry.reload_tour(path)
+    log.debug('Tour reloaded')
+
+
 def __job_rule_module_names(app):
-    rules_module_names = set(['galaxy.jobs.rules'])
+    rules_module_names = {'galaxy.jobs.rules'}
     if app.job_config.dynamic_params is not None:
         module_name = app.job_config.dynamic_params.get('rules_module')
         if module_name:
@@ -302,10 +320,12 @@ control_message_to_task = {
     'reload_tool_data_tables': reload_tool_data_tables,
     'reload_job_rules': reload_job_rules,
     'admin_job_lock': admin_job_lock,
-    'reload_sanitize_whitelist': reload_sanitize_whitelist,
+    'reload_sanitize_allowlist': reload_sanitize_allowlist,
     'recalculate_user_disk_usage': recalculate_user_disk_usage,
     'rebuild_toolbox_search_index': rebuild_toolbox_search_index,
     'reconfigure_watcher': reconfigure_watcher,
+    'reload_tour': reload_tour,
+    'reload_core_config': reload_core_config,
 }
 
 
@@ -317,7 +337,7 @@ class GalaxyQueueWorker(ConsumerProducerMixin, threading.Thread):
     """
 
     def __init__(self, app, task_mapping=None):
-        super(GalaxyQueueWorker, self).__init__()
+        super().__init__()
         log.info("Initializing %s Galaxy Queue Worker on %s", app.config.server_name, util.mask_password_from_url(app.config.amqp_internal_connection))
         self.daemon = True
         self.connection = app.amqp_internal_connection_obj
@@ -330,12 +350,13 @@ class GalaxyQueueWorker(ConsumerProducerMixin, threading.Thread):
         self.exchange_queue = None
         self.direct_queue = None
         self.control_queues = []
+        self.epoch = 0
 
     def send_control_task(self, task, noop_self=False, get_response=False, routing_key='control.*', kwargs=None):
         return send_control_task(app=self.app, task=task, noop_self=noop_self, get_response=get_response, routing_key=routing_key, kwargs=kwargs)
 
-    def send_local_control_task(self, task, kwargs=None):
-        return send_local_control_task(app=self.app, task=task, kwargs=kwargs)
+    def send_local_control_task(self, task, get_response=False, kwargs=None):
+        return send_local_control_task(app=self.app, get_response=get_response, task=task, kwargs=kwargs)
 
     @property
     def declare_queues(self):
@@ -347,10 +368,7 @@ class GalaxyQueueWorker(ConsumerProducerMixin, threading.Thread):
         log.info("Binding and starting galaxy control worker for %s", self.app.config.server_name)
         self.exchange_queue, self.direct_queue = galaxy.queues.control_queues_from_config(self.app.config)
         self.control_queues = [self.exchange_queue, self.direct_queue]
-        # Delete messages for the current workers' control queues on startup
-        with connections[self.connection].acquire(block=True) as conn:
-            for q in self.control_queues:
-                q(conn).delete()
+        self.epoch = time.time()
         self.start()
 
     def get_consumers(self, Consumer, channel):
@@ -364,8 +382,14 @@ class GalaxyQueueWorker(ConsumerProducerMixin, threading.Thread):
             if body.get('noop', None) != self.app.config.server_name:
                 try:
                     f = self.task_mapping[body['task']]
-                    log.info("Instance '%s' received '%s' task, executing now.", self.app.config.server_name, body['task'])
-                    result = f(self.app, **body['kwargs'])
+                    if message.headers.get('epoch', inf) > self.epoch:
+                        # Message was created after QueueWorker was started, execute
+                        log.info("Instance '%s' received '%s' task, executing now.", self.app.config.server_name, body['task'])
+                        result = f(self.app, **body['kwargs'])
+                    else:
+                        # Message was created before QueueWorker was started, ack message but don't run task
+                        log.info("Instance '%s' received '%s' task from the past, discarding it", self.app.config.server_name, body['task'])
+                        result = 'NO_OP'
                 except Exception:
                     # this shouldn't ever throw an exception, but...
                     log.exception("Error running control task type: %s", body['task'])

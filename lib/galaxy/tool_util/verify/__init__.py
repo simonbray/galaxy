@@ -3,7 +3,7 @@
 import difflib
 import filecmp
 import hashlib
-import io
+import json
 import logging
 import os
 import os.path
@@ -16,6 +16,10 @@ try:
 except ImportError:
     pysam = None
 
+from galaxy.tool_util.parser.util import (
+    DEFAULT_DELTA,
+    DEFAULT_DELTA_FRAC
+)
 from galaxy.util import unicodify
 from galaxy.util.compression_utils import get_fileobj
 from .asserts import verify_assertions
@@ -85,18 +89,35 @@ def verify(
     if attributes is None:
         attributes = {}
 
-    if filename is not None:
-        if mode == 'directory':
-            # if verifying a file inside a extra_files_path directory
-            # filename already point to a file that exists on disk
-            local_name = filename
-        else:
-            local_name = get_filename(filename)
+    # expected object might be None, so don't pull unless available
+    has_expected_object = 'object' in attributes
+    if has_expected_object:
+        assert filename is None
+        expected_object = attributes.get('object')
+        actual_object = json.loads(output_content)
+
+        expected_object_type = type(expected_object)
+        actual_object_type = type(actual_object)
+
+        if expected_object_type != actual_object_type:
+            message = f"Type mismatch between expected object ({expected_object_type}) and actual object ({actual_object_type})"
+            raise AssertionError(message)
+
+        if expected_object != actual_object:
+            message = f"Expected object ({expected_object}) does not match actual object ({actual_object})"
+            raise AssertionError(message)
+
+    elif filename is not None:
         temp_name = make_temp_fname(fname=filename)
         with open(temp_name, 'wb') as f:
             f.write(output_content)
 
-        # if the server's env has GALAXY_TEST_SAVE, save the output file to that dir
+        # If the server's env has GALAXY_TEST_SAVE, save the output file to that
+        # directory.
+        # This needs to be done before the call to `get_filename()` because that
+        # may raise an exception if `filename` does not exist (e.g. when
+        # generating a tool output file from scratch with
+        # `planemo test --update_test_data`).
         if keep_outputs_dir:
             ofn = os.path.join(keep_outputs_dir, filename)
             out_dir = os.path.dirname(ofn)
@@ -109,6 +130,14 @@ def verify(
                 log.exception('Could not save output file %s to %s', temp_name, ofn)
             else:
                 log.debug('## GALAXY_TEST_SAVE=%s. saved %s', keep_outputs_dir, ofn)
+
+        if mode == 'directory':
+            # if verifying a file inside a extra_files_path directory
+            # filename already point to a file that exists on disk
+            local_name = filename
+        else:
+            local_name = get_filename(filename)
+
         compare = attributes.get('compare', 'diff')
         try:
             if attributes.get('ftype', None) in ['bam', 'qname_sorted.bam', 'qname_input_sorted.bam', 'unsorted.bam', 'cram']:
@@ -124,18 +153,14 @@ def verify(
             elif compare == 're_match_multiline':
                 files_re_match_multiline(local_name, temp_name, attributes=attributes)
             elif compare == 'sim_size':
-                delta = attributes.get('delta', '100')
-                s1 = len(output_content)
-                s2 = os.path.getsize(local_name)
-                if abs(s1 - s2) > int(delta):
-                    raise AssertionError('Files %s=%db but %s=%db - compare by size (delta=%s) failed' % (temp_name, s1, local_name, s2, delta))
+                files_delta(local_name, temp_name, attributes=attributes)
             elif compare == "contains":
                 files_contains(local_name, temp_name, attributes=attributes)
             else:
                 raise Exception('Unimplemented Compare type: %s' % compare)
         except AssertionError as err:
-            errmsg = '%s different than expected, difference (using %s):\n' % (item_label, compare)
-            errmsg += "( %s v. %s )\n" % (local_name, temp_name)
+            errmsg = f'{item_label} different than expected, difference (using {compare}):\n'
+            errmsg += f"( {local_name} v. {temp_name} )\n"
             errmsg += unicodify(err)
             raise AssertionError(errmsg)
         finally:
@@ -151,26 +176,25 @@ def verify(
 def make_temp_fname(fname=None):
     """Safe temp name - preserve the file extension for tools that interpret it."""
     suffix = os.path.split(fname)[-1]  # ignore full path
-    fd, temp_prefix = tempfile.mkstemp(prefix='tmp', suffix=suffix)
-    return temp_prefix
+    with tempfile.NamedTemporaryFile(prefix='tmp', suffix=suffix, delete=False) as temp:
+        return temp.name
 
 
 def _bam_to_sam(local_name, temp_name):
     temp_local = tempfile.NamedTemporaryFile(suffix='.sam', prefix='local_bam_converted_to_sam_')
-    fd, temp_temp = tempfile.mkstemp(suffix='.sam', prefix='history_bam_converted_to_sam_')
-    os.close(fd)
-    try:
-        pysam.view('-h', '-o%s' % temp_local.name, local_name)
-    except Exception as e:
-        msg = "Converting local (test-data) BAM to SAM failed: %s" % unicodify(e)
-        raise Exception(msg)
-    try:
-        pysam.view('-h', '-o%s' % temp_temp, temp_name)
-    except Exception as e:
-        msg = "Converting history BAM to SAM failed: %s" % unicodify(e)
-        raise Exception(msg)
+    with tempfile.NamedTemporaryFile(suffix='.sam', prefix='history_bam_converted_to_sam_', delete=False) as temp:
+        try:
+            pysam.view('-h', '-o%s' % temp_local.name, local_name)
+        except Exception as e:
+            msg = "Converting local (test-data) BAM to SAM failed: %s" % unicodify(e)
+            raise Exception(msg)
+        try:
+            pysam.view('-h', '-o%s' % temp.name, temp_name)
+        except Exception as e:
+            msg = "Converting history BAM to SAM failed: %s" % unicodify(e)
+            raise Exception(msg)
     os.remove(temp_name)
-    return temp_local, temp_temp
+    return temp_local, temp.name
 
 
 def _verify_checksum(data, checksum_type, expected_checksum_value):
@@ -184,6 +208,20 @@ def _verify_checksum(data, checksum_type, expected_checksum_value):
         template = "Output checksum [%s] does not match expected [%s] (using hash algorithm %s)."
         message = template % (actual_checksum_value, expected_checksum_value, checksum_type)
         raise AssertionError(message)
+
+
+def files_delta(file1, file2, attributes=None):
+    """Check the contents of 2 files for size differences."""
+    if attributes is None:
+        attributes = {}
+    delta = attributes.get('delta', DEFAULT_DELTA)
+    delta_frac = attributes.get('delta_frac', DEFAULT_DELTA_FRAC)
+    s1 = os.path.getsize(file1)
+    s2 = os.path.getsize(file2)
+    if abs(s1 - s2) > delta:
+        raise AssertionError('Files %s=%db but %s=%db - compare by size (delta=%s) failed' % (file1, s1, file2, s2, delta))
+    if delta_frac is not None and not (s1 - (s1 * delta_frac) <= s2 <= s1 + (s1 * delta_frac)):
+        raise AssertionError('Files %s=%db but %s=%db - compare by size (delta_frac=%s) failed' % (file1, s1, file2, s2, delta_frac))
 
 
 def files_diff(file1, file2, attributes=None):
@@ -215,8 +253,8 @@ def files_diff(file1, file2, attributes=None):
                 is_pdf = True
                 # Replace non-Unicode characters using unicodify(),
                 # difflib.unified_diff doesn't work on list of bytes
-                history_data = [unicodify(l) for l in get_fileobj(file2, mode='rb', compressed_formats=compressed_formats)]
-                local_file = [unicodify(l) for l in get_fileobj(file1, mode='rb', compressed_formats=compressed_formats)]
+                history_data = [unicodify(line) for line in get_fileobj(file2, mode='rb', compressed_formats=compressed_formats)]
+                local_file = [unicodify(line) for line in get_fileobj(file1, mode='rb', compressed_formats=compressed_formats)]
             else:
                 raise AssertionError("Binary data detected, not displaying diff")
         if attributes.get('sort', False):
@@ -274,9 +312,9 @@ def files_re_match(file1, file2, attributes=None):
     join_char = ''
     to_strip = os.linesep
     try:
-        with io.open(file2, encoding='utf-8') as fh:
+        with open(file2, encoding='utf-8') as fh:
             history_data = fh.readlines()
-        with io.open(file1, encoding='utf-8') as fh:
+        with open(file1, encoding='utf-8') as fh:
             local_file = fh.readlines()
     except UnicodeDecodeError:
         join_char = b''
@@ -298,7 +336,7 @@ def files_re_match(file1, file2, attributes=None):
         data_line = data_line.rstrip(to_strip)
         if not re.match(regex_line, data_line):
             line_diff_count += 1
-            diffs.append('Regular Expression: %s, Data file: %s\n' % (regex_line, data_line))
+            diffs.append(f'Regular Expression: {regex_line}, Data file: {data_line}\n')
     if line_diff_count > lines_diff:
         raise AssertionError("Regular expression did not match data file (allowed variants=%i):\n%s" % (lines_diff, "".join(diffs)))
 
@@ -307,9 +345,9 @@ def files_re_match_multiline(file1, file2, attributes=None):
     """Check the contents of 2 files for differences using re.match in multiline mode."""
     join_char = ''
     try:
-        with io.open(file2, encoding='utf-8') as fh:
+        with open(file2, encoding='utf-8') as fh:
             history_data = fh.readlines()
-        with io.open(file1, encoding='utf-8') as fh:
+        with open(file1, encoding='utf-8') as fh:
             local_file = fh.read()
     except UnicodeDecodeError:
         join_char = b''
@@ -331,9 +369,9 @@ def files_contains(file1, file2, attributes=None):
     # TODO: allow forcing ordering of contains
     to_strip = os.linesep
     try:
-        with io.open(file2, encoding='utf-8') as fh:
+        with open(file2, encoding='utf-8') as fh:
             history_data = fh.read()
-        with io.open(file1, encoding='utf-8') as fh:
+        with open(file1, encoding='utf-8') as fh:
             local_file = fh.readlines()
     except UnicodeDecodeError:
         to_strip = os.linesep.encode('utf-8')
@@ -350,4 +388,4 @@ def files_contains(file1, file2, attributes=None):
         if contains not in history_data:
             line_diff_count += 1
         if line_diff_count > lines_diff:
-            raise AssertionError("Failed to find '%s' in history data. (lines_diff=%i):\n" % (contains, lines_diff))
+            raise AssertionError("Failed to find '%s' in history data. (lines_diff=%i)" % (contains, lines_diff))

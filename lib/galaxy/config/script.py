@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-from __future__ import print_function
 
 import os
 import string
@@ -37,6 +36,7 @@ DEFAULT_DB_CONN = 'sqlite:///./database/universe.sqlite?isolation_level=IMMEDIAT
 SAMPLES_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), 'sample'))
 GALAXY_CONFIG_TEMPLATE_FILE = os.path.join(SAMPLES_PATH, 'galaxy.yml.sample')
 STATIC_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, 'web', 'framework', 'static'))
+CLIENT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir, 'client'))
 
 MSG_CONFIG_SUMMARY = """
 For help on configuring Galaxy, consult the documentation at: \n {}
@@ -52,9 +52,9 @@ Start Galaxy by running the command from directory [{}]:
 # configs differently.
 GALAXY_CONFIG_SUBSTITUTIONS = {
     '  http: 127.0.0.1:8080': '  ${uwsgi_transport}: ${host}:${port}',
-    '  static-map: /static/style=static/style/blue': '  static-map: /static=${static_path}/style/blue',
     '  static-map: /static=static': '  static-map: /static=${static_path}',
     '  static-map: /favicon.ico=static/favicon.ico': '  static-map: /static=${static_path}/favicon.ico',
+    '  static-safe: client/src/assets': '  ${client_path}/src/assets',
     '  virtualenv: .venv': '  #venv: .venv   # not used when running installed',
     '  pythonpath: lib': '  #pythonpath: lib  # not used  when running installed',
     '  #config_dir: false': '  config_dir: ${config_dir}',
@@ -147,13 +147,15 @@ def _handle_galaxy_yml(args, config_dir, data_dir):
         uwsgi_transport=uwsgi_transport,
         config_dir=config_dir,
         data_dir=data_dir,
+        client_dir=CLIENT_PATH,
         static_path=STATIC_PATH,
         database_connection=args.db_conn,
     )
 
     galaxy_config_template = []
     with open(GALAXY_CONFIG_TEMPLATE_FILE) as fh:
-        for line in [l.rstrip('\n') for l in fh.readlines()]:
+        for line in fh:
+            line = line.rstrip('\n')
             for k, v in GALAXY_CONFIG_SUBSTITUTIONS.items():
                 if line == k:
                     line = v

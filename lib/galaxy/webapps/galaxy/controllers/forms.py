@@ -2,7 +2,6 @@ import copy
 import logging
 import re
 
-import six
 from markupsafe import escape
 
 from galaxy import model, util
@@ -104,26 +103,26 @@ class Forms(BaseUIController):
     @web.require_admin
     def create_form(self, trans, payload=None, **kwd):
         if trans.request.method == 'GET':
-            fd_types = sorted(trans.app.model.FormDefinition.types.items())
+            fd_types = sorted(trans.app.model.FormDefinition.types.__members__.items())
             return {
-                'title'         : 'Create new form',
-                'submit_title'  : 'Create',
-                'inputs'        : [{
-                    'name'    : 'name',
-                    'label'   : 'Name'
+                'title': 'Create new form',
+                'submit_title': 'Create',
+                'inputs': [{
+                    'name': 'name',
+                    'label': 'Name'
                 }, {
-                    'name'    : 'desc',
-                    'label'   : 'Description'
+                    'name': 'desc',
+                    'label': 'Description'
                 }, {
-                    'name'    : 'type',
-                    'type'    : 'select',
-                    'options' : [('None', 'none')] + [(ft[1], ft[1]) for ft in fd_types],
-                    'label'   : 'Type'
+                    'name': 'type',
+                    'type': 'select',
+                    'options': [('None', 'none')] + [(ft[1], ft[1]) for ft in fd_types],
+                    'label': 'Type'
                 }, {
-                    'name'    : 'csv_file',
-                    'label'   : 'Import from CSV',
-                    'type'    : 'upload',
-                    'help'    : 'Import fields from CSV-file with the following format: Label, Help, Type, Value, Options, Required=True/False.'
+                    'name': 'csv_file',
+                    'label': 'Import from CSV',
+                    'type': 'upload',
+                    'help': 'Import fields from CSV-file with the following format: Label, Help, Type, Value, Options, Required=True/False.'
                 }]
             }
         else:
@@ -136,19 +135,19 @@ class Forms(BaseUIController):
                     row = line.split(',')
                     if len(row) >= 6:
                         prefix = 'fields_%i|' % index
-                        payload['%s%s' % (prefix, 'name')] = '%i_imported_field' % (index + 1)
-                        payload['%s%s' % (prefix, 'label')] = row[0]
-                        payload['%s%s' % (prefix, 'helptext')] = row[1]
-                        payload['%s%s' % (prefix, 'type')] = row[2]
-                        payload['%s%s' % (prefix, 'default')] = row[3]
-                        payload['%s%s' % (prefix, 'selectlist')] = row[4].split(',')
-                        payload['%s%s' % (prefix, 'required')] = row[5].lower() == 'true'
+                        payload['{}{}'.format(prefix, 'name')] = '%i_imported_field' % (index + 1)
+                        payload['{}{}'.format(prefix, 'label')] = row[0]
+                        payload['{}{}'.format(prefix, 'helptext')] = row[1]
+                        payload['{}{}'.format(prefix, 'type')] = row[2]
+                        payload['{}{}'.format(prefix, 'default')] = row[3]
+                        payload['{}{}'.format(prefix, 'selectlist')] = row[4].split(',')
+                        payload['{}{}'.format(prefix, 'required')] = row[5].lower() == 'true'
                     index = index + 1
             new_form, message = self.save_form_definition(trans, None, payload)
             if new_form is None:
                 return self.message_exception(trans, message)
             imported = (' with %i imported fields' % index) if index > 0 else ''
-            message = 'The form \'%s\' has been created%s.' % (payload.get('name'), imported)
+            message = 'The form \'{}\' has been created{}.'.format(payload.get('name'), imported)
             return {'message': util.sanitize_text(message)}
 
     @web.legacy_expose_api
@@ -160,61 +159,61 @@ class Forms(BaseUIController):
         form = get_form(trans, id)
         latest_form = form.latest_form
         if trans.request.method == 'GET':
-            fd_types = sorted(trans.app.model.FormDefinition.types.items())
+            fd_types = sorted(trans.app.model.FormDefinition.types.__members__.items())
             ff_types = [(t.__name__.replace('Field', ''), t.__name__) for t in trans.model.FormDefinition.supported_field_types]
             field_cache = []
             field_inputs = [{
-                'name'    : 'name',
-                'label'   : 'Name',
-                'value'   : 'field_name',
-                'help'    : 'The field name must be unique for each field and must contain only alphanumeric characters and underscore.'
+                'name': 'name',
+                'label': 'Name',
+                'value': 'field_name',
+                'help': 'The field name must be unique for each field and must contain only alphanumeric characters and underscore.'
             }, {
-                'name'    : 'label',
-                'label'   : 'Label',
-                'value'   : 'Field label'
+                'name': 'label',
+                'label': 'Label',
+                'value': 'Field label'
             }, {
-                'name'    : 'helptext',
-                'label'   : 'Help text'
+                'name': 'helptext',
+                'label': 'Help text'
             }, {
-                'name'    : 'type',
-                'label'   : 'Type',
-                'type'    : 'select',
-                'options' : ff_types
+                'name': 'type',
+                'label': 'Type',
+                'type': 'select',
+                'options': ff_types
             }, {
-                'name'    : 'default',
-                'label'   : 'Default value'
+                'name': 'default',
+                'label': 'Default value'
             }, {
-                'name'    : 'selectlist',
-                'label'   : 'Options',
-                'help'    : '*Only for fields which allow multiple selections, provide comma-separated values.'
+                'name': 'selectlist',
+                'label': 'Options',
+                'help': '*Only for fields which allow multiple selections, provide comma-separated values.'
             }, {
-                'name'    : 'required',
-                'label'   : 'Required',
-                'type'    : 'boolean',
-                'value'   : 'false'
+                'name': 'required',
+                'label': 'Required',
+                'type': 'boolean',
+                'value': 'false'
             }]
             form_dict = {
-                'title'  : 'Edit form for \'%s\'' % (util.sanitize_text(latest_form.name)),
-                'inputs' : [{
-                    'name'    : 'name',
-                    'label'   : 'Name',
-                    'value'   : latest_form.name
+                'title': 'Edit form for \'%s\'' % (util.sanitize_text(latest_form.name)),
+                'inputs': [{
+                    'name': 'name',
+                    'label': 'Name',
+                    'value': latest_form.name
                 }, {
-                    'name'    : 'desc',
-                    'label'   : 'Description',
-                    'value'   : latest_form.desc
+                    'name': 'desc',
+                    'label': 'Description',
+                    'value': latest_form.desc
                 }, {
-                    'name'    : 'type',
-                    'type'    : 'select',
-                    'options' : [('None', 'none')] + [(ft[1], ft[1]) for ft in fd_types],
-                    'label'   : 'Type',
-                    'value'   : latest_form.type
+                    'name': 'type',
+                    'type': 'select',
+                    'options': [('None', 'none')] + [(ft[1], ft[1]) for ft in fd_types],
+                    'label': 'Type',
+                    'value': latest_form.type
                 }, {
-                    'name'    : 'fields',
-                    'title'   : 'Field',
-                    'type'    : 'repeat',
-                    'cache'   : field_cache,
-                    'inputs'  : field_inputs
+                    'name': 'fields',
+                    'title': 'Field',
+                    'type': 'repeat',
+                    'cache': field_cache,
+                    'inputs': field_inputs
                 }]
             }
             for field in latest_form.fields:
@@ -246,12 +245,12 @@ class Forms(BaseUIController):
         index = 0
         while True:
             prefix = 'fields_%i|' % index
-            if '%s%s' % (prefix, 'label') in payload:
+            if '{}{}'.format(prefix, 'label') in payload:
                 field_attributes = ['name', 'label', 'helptext', 'required', 'type', 'selectlist', 'default']
-                field_dict = {attr: payload.get('%s%s' % (prefix, attr)) for attr in field_attributes}
+                field_dict = {attr: payload.get(f'{prefix}{attr}') for attr in field_attributes}
                 field_dict['visible'] = True
                 field_dict['required'] = field_dict['required'] == 'true'
-                if isinstance(field_dict['selectlist'], six.string_types):
+                if isinstance(field_dict['selectlist'], str):
                     field_dict['selectlist'] = field_dict['selectlist'].split(',')
                 else:
                     field_dict['selectlist'] = []

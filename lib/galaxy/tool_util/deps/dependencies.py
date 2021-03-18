@@ -3,12 +3,14 @@ from galaxy.util import bunch
 from .mulled.mulled_build import DEFAULT_CHANNELS
 
 
-class AppInfo(object):
+class AppInfo:
 
     def __init__(
         self,
         galaxy_root_dir=None,
         default_file_path=None,
+        tool_data_path=None,
+        shed_tool_data_path=None,
         outputs_to_working_directory=False,
         container_image_cache_path=None,
         library_import_dir=None,
@@ -20,6 +22,8 @@ class AppInfo(object):
     ):
         self.galaxy_root_dir = galaxy_root_dir
         self.default_file_path = default_file_path
+        self.tool_data_path = tool_data_path
+        self.shed_tool_data_path = shed_tool_data_path
         # TODO: Vary default value for docker_volumes based on this...
         self.outputs_to_working_directory = outputs_to_working_directory
         self.container_image_cache_path = container_image_cache_path
@@ -31,12 +35,14 @@ class AppInfo(object):
         self.mulled_channels = mulled_channels
 
 
-class ToolInfo(object):
+class ToolInfo:
     # TODO: Introduce tool XML syntax to annotate the optional environment
     # variables they can consume (e.g. JVM options, license keys, etc..)
     # and add these to env_path_through
 
-    def __init__(self, container_descriptions=None, requirements=None, requires_galaxy_python_environment=False, env_pass_through=["GALAXY_SLOTS"], guest_ports=None):
+    def __init__(self, container_descriptions=None, requirements=None, requires_galaxy_python_environment=False, env_pass_through=None, guest_ports=None, tool_id=None, tool_version=None, profile=-1):
+        if env_pass_through is None:
+            env_pass_through = ["GALAXY_SLOTS"]
         if container_descriptions is None:
             container_descriptions = []
         if requirements is None:
@@ -46,23 +52,27 @@ class ToolInfo(object):
         self.requires_galaxy_python_environment = requires_galaxy_python_environment
         self.env_pass_through = env_pass_through
         self.guest_ports = guest_ports
+        self.tool_id = tool_id
+        self.tool_version = tool_version
+        self.profile = profile
 
 
-class JobInfo(object):
+class JobInfo:
 
     def __init__(
-        self, working_directory, tool_directory, job_directory, tmp_directory, job_directory_type
+        self, working_directory, tool_directory, job_directory, tmp_directory, home_directory, job_directory_type,
     ):
         self.working_directory = working_directory
-        self.job_directory = job_directory
         # Tool files may be remote staged - so this is unintuitively a property
         # of the job not of the tool.
         self.tool_directory = tool_directory
+        self.job_directory = job_directory
         self.tmp_directory = tmp_directory
+        self.home_directory = home_directory
         self.job_directory_type = job_directory_type  # "galaxy" or "pulsar"
 
 
-class DependenciesDescription(object):
+class DependenciesDescription:
     """ Capture (in a readily serializable way) context related a tool
     dependencies - both the tool's listed requirements and the tool shed
     related context required to resolve dependencies via the
@@ -72,7 +82,10 @@ class DependenciesDescription(object):
     other potential remote execution mechanisms.
     """
 
-    def __init__(self, requirements=[], installed_tool_dependencies=[]):
+    def __init__(self, requirements=None, installed_tool_dependencies=None):
+        requirements = requirements or ToolRequirements()
+        if installed_tool_dependencies is None:
+            installed_tool_dependencies = []
         self.requirements = requirements
         # tool shed installed tool dependencies...
         self.installed_tool_dependencies = installed_tool_dependencies
@@ -91,7 +104,7 @@ class DependenciesDescription(object):
         requirements_dicts = as_dict.get('requirements', [])
         requirements = ToolRequirements.from_list(requirements_dicts)
         installed_tool_dependencies_dicts = as_dict.get('installed_tool_dependencies', [])
-        installed_tool_dependencies = map(DependenciesDescription._toolshed_install_dependency_from_dict, installed_tool_dependencies_dicts)
+        installed_tool_dependencies = list(map(DependenciesDescription._toolshed_install_dependency_from_dict, installed_tool_dependencies_dicts))
         return DependenciesDescription(
             requirements=requirements,
             installed_tool_dependencies=installed_tool_dependencies

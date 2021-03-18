@@ -20,7 +20,7 @@ from gxformat2 import python_to_workflow
 galaxy_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir))
 sys.path[1:1] = [os.path.join(galaxy_root, "lib"), os.path.join(galaxy_root, "test")]
 
-from base.populators import (  # noqa: I100,I202
+from galaxy_test.base.populators import (
     GiDatasetCollectionPopulator,
     GiDatasetPopulator,
     GiWorkflowPopulator,
@@ -63,7 +63,7 @@ def main(argv=None):
 
     target = functools.partial(_run, args, gi, workflow_id, uuid)
     threads = []
-    for i in range(args.workflow_count):
+    for _ in range(args.workflow_count):
         t = Thread(target=target)
         t.daemon = True
         t.start()

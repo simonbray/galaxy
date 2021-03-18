@@ -15,7 +15,7 @@ from tool_shed.utility_containers import utility_container_manager
 log = logging.getLogger(__name__)
 
 
-class DependencyDisplayer(object):
+class DependencyDisplayer:
 
     def __init__(self, app):
         self.app = app
@@ -110,7 +110,7 @@ class DependencyDisplayer(object):
         if metadata_dict:
             invalid_tool_dependencies = metadata_dict.get('invalid_tool_dependencies', None)
             if invalid_tool_dependencies:
-                for td_key, requirement_dict in invalid_tool_dependencies.items():
+                for requirement_dict in invalid_tool_dependencies.values():
                     error = requirement_dict.get('error', None)
                     if error:
                         message = '%s  ' % str(error)
@@ -458,7 +458,7 @@ class DependencyDisplayer(object):
                                   owner=str(repository.owner),
                                   changeset_revision=str(repository.installed_changeset_revision))
                     pathspec = ['repository', 'get_readme_files']
-                    raw_text = util.url_get(tool_shed_url, password_mgr=self.app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
+                    raw_text = util.url_get(tool_shed_url, auth=self.app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
                     readme_files_dict = json.loads(raw_text)
                 else:
                     readme_files_dict = readme_util.build_readme_files_dict(self.app,

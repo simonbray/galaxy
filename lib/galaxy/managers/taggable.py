@@ -5,6 +5,7 @@ Mixins for Taggable model managers and serializers.
 # from galaxy import exceptions as galaxy_exceptions
 
 import logging
+from typing import Type
 
 from sqlalchemy import sql
 
@@ -44,9 +45,8 @@ def _tags_from_strings(item, tag_handler, new_tags_list, user=None):
     # TODO:!! does the creation of new_tags_list mean there are now more and more unused tag rows in the db?
 
 
-class TaggableManagerMixin(object):
-    #: class of TagAssociation (e.g. HistoryTagAssociation)
-    tag_assoc = None
+class TaggableManagerMixin:
+    tag_assoc: Type[model.ItemTagAssociation]
 
     # TODO: most of this can be done by delegating to the GalaxyTagHandler?
     def get_tags(self, item):
@@ -66,7 +66,7 @@ class TaggableManagerMixin(object):
     #    pass
 
 
-class TaggableSerializerMixin(object):
+class TaggableSerializerMixin:
 
     def add_serializers(self):
         self.serializers['tags'] = self.serialize_tags
@@ -78,7 +78,7 @@ class TaggableSerializerMixin(object):
         return _tags_to_strings(item)
 
 
-class TaggableDeserializerMixin(object):
+class TaggableDeserializerMixin:
 
     def add_deserializers(self):
         self.deserializers['tags'] = self.deserialize_tags
@@ -94,7 +94,7 @@ class TaggableDeserializerMixin(object):
         return item.tags
 
 
-class TaggableFilterMixin(object):
+class TaggableFilterMixin:
 
     valid_ops = ('eq', 'contains', 'has')
 

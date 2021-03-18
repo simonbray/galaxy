@@ -1,8 +1,9 @@
 # For testing
-pytest
+-r test-requirements.txt
 
 # For dev
 sphinx
+mypy
 
 # For release
 wheel

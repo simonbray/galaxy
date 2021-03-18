@@ -1,7 +1,14 @@
 <?xml version="1.0"?>
 <object_store type="hierarchical">
     <backends>
-        <object_store type="distributed" id="primary" order="0">
+        <!-- In distributed and hierarchical world, you can choose that some
+             backends are automatically unused whenever they become too full.
+             Setting the maxpctfull attribute (on top level object_store it
+             behaves as a global default), or it can be applied to individual
+             backends to override a global setting. This only applies to disk
+             based backends and not remote object stores.
+             -->
+        <object_store type="distributed" id="primary" order="0" maxpctfull="90">
             <backends>
                 <backend id="files1" type="disk" weight="1">
                     <files_dir path="database/files1"/>
@@ -31,6 +38,20 @@
              <cache path="database/object_store_cache" size="1000" />
              <extra_dir type="job_work" path="database/job_working_directory_s3"/>
              <extra_dir type="temp" path="database/tmp_s3"/>
+        </object_store>
+        -->
+        
+        <!-- Sample iRods Object Store 
+        -->
+        <!--
+        <object_store type="irods">
+            <auth username="rods" password="rods" />
+            <resource name="demoResc" />
+            <zone name="tempZone" />
+            <connection host="localhost" port="1247" timeout="30" poolsize="3" refresh_time="300"/>
+            <cache path="database/object_store_cache_irods" size="1000" />
+            <extra_dir type="job_work" path="database/job_working_directory_irods"/>
+            <extra_dir type="temp" path="database/tmp_irods"/>
         </object_store>
         -->
 

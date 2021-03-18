@@ -12,6 +12,10 @@ from sqlalchemy import (
     Table
 )
 from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy_utils import (
+    create_database,
+    database_exists,
+)
 
 from galaxy.model.tool_shed_install import mapping
 
@@ -23,10 +27,16 @@ migrate_repository_directory = os.path.abspath(os.path.dirname(__file__)).replac
 migrate_repository = repository.Repository(migrate_repository_directory)
 
 
-def create_or_verify_database(url, engine_options={}, app=None):
+def create_or_verify_database(url, engine_options=None, app=None):
     """
     """
     # Create engine and metadata
+    engine_options = engine_options or {}
+    if not database_exists(url):
+        message = "Creating database for URI [%s]" % url
+        log.info(message)
+        create_database(url)
+
     engine = create_engine(url, **engine_options)
 
     def migrate():
@@ -87,10 +97,10 @@ def migrate_to_current_version(engine, schema):
     changeset = schema.changeset(None)
     for ver, change in changeset:
         nextver = ver + changeset.step
-        log.info('Migrating %s -> %s... ' % (ver, nextver))
+        log.info(f'Migrating {ver} -> {nextver}... ')
         old_stdout = sys.stdout
 
-        class FakeStdout(object):
+        class FakeStdout:
             def __init__(self):
                 self.buffer = []
 

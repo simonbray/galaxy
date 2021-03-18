@@ -13,8 +13,8 @@
         <plugin id="pbs" type="runner" load="galaxy.jobs.runners.pbs:PBSJobRunner" workers="2"/>
         <plugin id="drmaa" type="runner" load="galaxy.jobs.runners.drmaa:DRMAAJobRunner">
             <!-- Different DRMs handle successfully completed jobs differently,
-                 these options can be changed to handle such differences and
-                 are explained in detail on the Galaxy wiki. Defaults are shown -->
+                 these options can be changed to handle such differences. Defaults are
+                 shown. -->
             <param id="invalidjobexception_state">ok</param>
             <param id="invalidjobexception_retries">0</param>
             <param id="internalexception_state">ok</param>
@@ -207,14 +207,40 @@
             <!-- The namespace to be used on the Kubernetes cluster, if different from default, this needs to be set
                  accordingly in the PV and PVC detailed above -->
 
-            <!-- <param id="k8s_pod_retrials">4</param> -->
-            <!-- Allows pods to retry up to this number of times, before marking the galaxy job failed. k8s is a state
-                 setter essentially, so by default it will try to take a job submitted to successful completion. A job
-                 submits pods, until the number of successes (1 in this use case) is achieved, assuming that whatever is
-                 making the pods fail will be fixed (such as a stale disk or a dead node that it is being restarted).
-                 This option sets a limit of retrials, so that after that number of failed pods, the job is re-scaled to
-                 zero (no execution) and the stderr/stdout of the k8s job is reported in galaxy (and the galaxy job set
-                 to failed) -->
+            <!-- <param id="k8s_pod_priority_class">medium-priority-class</param> -->
+            <!-- An optional priority class to be assigned to the job, which can control whether or not jobs can
+                 preempt existing pods to make room for new ones.
+                 https://kubernetes.io/docs/concepts/configuration/pod-priority-preemption/#priorityclass -->
+
+            <!-- <param id="k8s_affinity">
+                    nodeAffinity:
+                      requiredDuringSchedulingIgnoredDuringExecution:
+                        nodeSelectorTerms:
+                        - matchExpressions:
+                          - key: kubernetes.io/e2e-az-name
+                            operator: In
+                            values:
+                            - e2e-az1
+                            - e2e-az2
+            </param> -->
+            <!-- An affinity to be assigned to the job, useful for preferentially placing jobs on specific nodes,
+                 or for preventing two jobs from being scheduled on the same node.
+                 https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#affinity-and-anti-affinity -->
+
+            <!-- <param id="k8s_node_selector">
+                    kubernetes.io/hostname: my-large-mem-node
+            </param> -->
+            <!-- An optional node selector, so that jobs are scheduled only on nodes with matching labels
+                 https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector -->
+
+            <!-- <param id="k8s_tolerations">
+                    - key: "key1"
+                      operator: "Equal"
+                      value: "value1"
+                      effect: "NoSchedule"
+            </param> -->
+            <!-- An optional toleration, allowing jobs to be scheduled on tainted nodes.
+                 https://kubernetes.io/docs/concepts/scheduling-eviction/taint-and-toleration/ -->
 
             <!-- <param id="k8s_walltime_limit">172800</param> -->
             <!-- Controls the maximum time before kubernetes terminates the job. Sets activeDeadlineSeconds
@@ -236,6 +262,27 @@
                  then to create the new job (the old job is not trusted to have been instructed to do the same as the
                  new one). This variables controls the timeout for waiting for that job deletion. If the timeout is
                  exceeded and the existing job is not deleted, the new job won't be added to the Galaxy queue. -->
+
+            <!-- <param id="k8s_job_ttl_secs_after_finished">300</param> -->
+            <!-- Sets the ttlSecondsAfterFinished, which will automatically delete the kubernetes job after a specified
+                 number of seconds since its finish. It relies on a k8s alpha feature gate, which must be enabled
+                 https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/. This property is
+                 complementary to `k8s_cleanup_job` and can be used to delete the job after a specific delay, instead of
+                 immediately, for debugging purposes and is an additional cleanup safeguard. -->
+
+            <!-- <param id="k8s_cleanup_job">always</param> -->
+            <!-- Whether to delete the k8s job after it finishes. This setting is independent of the cleanup
+                 setting in the galaxy config, and determines whether the k8s job (not galaxy job) is deleted
+                 or not. Valid values are "onsuccess", "always" and "never", with the default being "always". -->
+
+            <!-- <param id="k8s_job_metadata">
+                  labels:
+                      mylabel1: myvalue1
+                  annotations:
+                      myannotation1: myvalue1
+                      myannotation2: myvalue2
+                </param> -->
+            <!-- Apply additional labels and annotations to the k8s job spec -->
 
             <!-- <param id="k8s_supplemental_group_id">0</param> -->
             <!-- <param id="k8s_fs_group_id">0</param> -->
@@ -267,31 +314,6 @@
                  a requirement of the other.
 
                  -->
-            <!-- <param id="requests_cpu">500m</param> -->
-            <!-- <param id="requests_memory">500Mi</param> -->
-            <!-- <param id="limits_cpu">2</param> -->
-            <!-- <param id="limits_memory">2Gi</param> -->
-            <!-- Kubernetes resource Requests and Limits
-                 Parameters above (requests_* and limits_*) set default minimal (requests) and
-                 maximal (limits) CPU and memory resources to be allocated to all containers in
-                 Kubernetes jobs by default.
-
-                 Limits and requests for CPU resources are measured in cpu units. Fractional requests are allowed. A
-                 Container with requests_cpu of 0.5 is guaranteed half as much CPU as one that asks for 1 CPU. The
-                 expression 0.1 is equivalent to the expression 100m, which can be read as “one hundred millicpu”. Some
-                 people say “one hundred millicores”, and this is understood to mean the same thing. A request with a
-                 decimal point, like 0.1, is converted to 100m by the API, and precision finer than 1m is not allowed.
-                 For this reason, the form 100m might be preferred.
-
-                 You can express memory as a plain integer or as a fixed-point integer using one of these suffixes: E,
-                 P, T, G, M, K. You can also use the power-of-two equivalents: Ei, Pi, Ti, Gi, Mi, Ki.
-                 For instance, "1Gi" stands for 1 Gigabyte, and "500Mi" stands for 500 megabytes. Using other formats
-                 will make the jobs fail as Kubernetes won't recognize the assignment.
-
-                 For more details on the Kubernetes resources management, see:
-                 https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
-                 -->
-
         </plugin>
         <plugin id="godocker" type="runner" load="galaxy.jobs.runners.godocker:GodockerJobRunner">
             <!-- Go-Docker is a batch computing/cluster management tool using Docker
@@ -324,8 +346,8 @@
             <!-- Username to access Mesos cluster. -->
             <param id="password">password</param>
             <!-- Password to access Mesos cluster. -->
-            <param id="insecure">true</param>
-            <!-- True to communicate with Chronos over HTTPS; false otherwise-->
+            <param id="insecure">false</param>
+            <!-- False to communicate with Chronos over HTTPS; true otherwise-->
         </plugin>
         <!-- Additionally any plugin or destination (below) may define an "enabled" parameter that should
              evaluate to True or False. When setup using
@@ -342,9 +364,9 @@
              For documentation on handler assignment methods, see the documentation under:
              https://docs.galaxyproject.org/en/latest/admin/scaling.html#job-handler-assignment-methods
 
-             The <handlers> container tag takes three optional attributes:
+             The <handlers> container tag takes four optional attributes:
 
-               <handlers assign_with="method" max_grab="count" default="id_or_tag"/>
+               <handlers assign_with="method" max_grab="count" ready_window_size="100" default="id_or_tag"/>
 
                - `assign_with` - How jobs should be assigned to handlers. The value can be a single method or a
                  comma-separated list that will be tried in order. The default depends on whether any handlers and a job
@@ -362,6 +384,15 @@
                  iteration. This only applies for methods that cause handlers to self-assign multiple jobs at once
                  (db-skip-locked, db-transaction-isolation) and the value is an integer > 0. Default is to grab as many
                  jobs ready to run as possible.
+
+               - `ready_window_size` - Handlers query for and dispatch jobs ready to run in a loop. If the number of
+                 jobs in the `new` state grows very large but they cannot be dispatched due to user concurrency limits,
+                 checking all of these jobs on every iteration can drastically slow down job throughput as each pending
+                 job is checked and then deferred due to limits. This option limits the number of jobs per user are
+                 returned by the query on each iteration. By default it is set to 100. Setting this lower can improve
+                 throughput for other users when one user submits thousands of independent jobs.
+
+                 Be aware that anonymous users are treated as a single user by this algorithm.
 
                - `default` - An ID or tag of the handler(s) that should handle any jobs not assigned to a specific
                  handler (which is probably most of them). If unset, the default is any untagged handlers plus any
@@ -401,6 +432,17 @@
                try it early - it will slightly speed up local jobs by
                embedding metadata calculation in job script itself.
           -->
+          <param id="metadata_strategy">directory</param>
+          <!-- If set, overwrites metadata_strategy (configurable in galaxy.yml).
+               Valid values are `directory` (default), `extended` and `legacy`.
+               Setting metadata_strategy to `extended` requires that all object stores
+               that can be written to store datasets by uuid. In `extended` mode jobs
+               will decide if a tool run failed, the object stores configuration
+               is serialized and made available to the job and is used for writing output
+               datasets to the object store as part of the job and dynamic output discovery
+               (e.g. discovered datasets <discover_datasets>, unpopulated collections, etc)
+               happens as part of the job.
+          -->
           <job_metrics />
           <!-- Above element demonstrates embedded job metrics definition - see
                job_metrics_conf.xml.sample for full documentation on possible nested
@@ -415,11 +457,8 @@
                volumes should be exposed how based on Galaxy's settings and the
                destination - but be sure to add any library paths or data incides
                that may be needed read-only.
-          -->
-          <!--
-          <param id="docker_volumes">$defaults,/mnt/galaxyData/libraries:ro,/mnt/galaxyData/indices:ro</param>
-          -->
-          <!-- For a stock Galaxy instance and traditional job runner $defaults will
+
+               For a stock Galaxy instance and traditional job runner $defaults will
                expand out as:
 
                $galaxy_root:ro,$tool_directory:ro,$job_directory:ro,$working_directory:rw,$default_file_path:rw
@@ -446,6 +485,9 @@
                $galaxy_root, $default_file_path, $tool_directory, $working_directory,
                are available to all jobs and $job_directory is also available for
                Pulsar jobs.
+          -->
+          <!--
+          <param id="docker_volumes">$defaults,/mnt/galaxyData/libraries:ro,/mnt/galaxyData/indices:ro</param>
           -->
           <!-- One can run docker using volumes-from tag by setting the following
                parameter. For more information on volumes-from check out the following
@@ -477,6 +519,9 @@
           <!-- By default, a container will live on past its run. By
                adding the '\-\-rm' flag to the command line, the container
                will be removed automatically after the program is complete.
+               Galaxy does this by default to clean up the containers it runs,
+               but this can be disabled for debugging and such using the following
+               command.
           -->
           <!-- <param id="docker_auto_rm">true</param> -->
           <!-- Override which user to launch Docker container as - defaults to 
@@ -509,9 +554,8 @@
           <!-- <param id="docker_default_container_id">busybox:ubuntu-14.04</param> -->
 
           <!-- If the destination should be secured to only allow containerized jobs
-               the following parameter may be set for the job destination. Not all,
-               or even most, tools available in Galaxy core or in the Tool Shed
-               support Docker yet so this option may require a lot of extra work for
+               the following parameter may be set for the job destination. Some tools do
+               not yet support Docker so this option may require extra work for
                the deployer. -->
           <!-- <param id="require_container">true</param> -->
         </destination>
@@ -832,6 +876,10 @@
             <param id="job_memory">16000</param>
             <param id="job_cores">8</param>
             <param id="job_project">BigMem</param>
+            <!-- Exclude hosts in the LSF cluster from receiving the job. 
+                 Useful for avoiding nodes with temporal issues. 
+            -->
+            <param id="job_excluded_hosts">/path/to/file/with/hosts/to/be/excluded/one_per_line.txt</param>
         </destination>
 
         <destination id="condor" runner="condor">
@@ -867,11 +915,7 @@
         <!-- Jobs can be re-submitted for various reasons (to the same destination or others,
              with or without a short delay). For instance, jobs that hit the walltime on one
              destination can be automatically resubmitted to another destination. Re-submission
-             is defined on a per-destination basis using ``resubmit`` tags. Re-submission only
-             happens currently in response to problems in the job runner - so for instance if a
-             job fails to allocate memory but the job runner doesn't detect this and completes
-             the job normally but the exit code indicates the error - the job failure
-             re-submission won't run yet (this will be added in the future).
+             is defined on a per-destination basis using ``resubmit`` tags.
 
              Multiple `resubmit` tags can be defined, the first resubmit condition that is true
              (i.e. evaluates to a Python truthy value) will be used for a particular job failure.
@@ -906,6 +950,9 @@
         <destination id="smallmem" runner="slurm">
             <param id="nativeSpecification">--mem-per-cpu=512</param>
             <resubmit condition="memory_limit_reached" destination="bigmem" />
+        </destination>
+        <destination id="bigmem" runner="slurm">
+            <param id="nativeSpecification">--mem-per-cpu=256000</param>
         </destination>
         <destination id="retry_on_unknown_problems" runner="slurm">
             <!-- Just retry the job 5 times if un-categories errors occur backing
@@ -975,6 +1022,32 @@
                  internally by the runner. -->
             <param id="docker_enabled">true</param>
         </destination>
+        <destination id="kubernetes" runner="k8s">
+            <!-- <param id="requests_cpu">500m</param> -->
+            <!-- <param id="requests_memory">500Mi</param> -->
+            <!-- <param id="limits_cpu">2</param> -->
+            <!-- <param id="limits_memory">2Gi</param> -->
+            <!-- Kubernetes resource Requests and Limits
+                 Parameters above (requests_* and limits_*) set default minimal (requests) and
+                 maximal (limits) CPU and memory resources to be allocated to all containers in
+                 Kubernetes jobs by default.
+
+                 Limits and requests for CPU resources are measured in cpu units. Fractional requests are allowed. A
+                 Container with requests_cpu of 0.5 is guaranteed half as much CPU as one that asks for 1 CPU. The
+                 expression 0.1 is equivalent to the expression 100m, which can be read as “one hundred millicpu”. Some
+                 people say “one hundred millicores”, and this is understood to mean the same thing. A request with a
+                 decimal point, like 0.1, is converted to 100m by the API, and precision finer than 1m is not allowed.
+                 For this reason, the form 100m might be preferred.
+
+                 You can express memory as a plain integer or as a fixed-point integer using one of these suffixes: E,
+                 P, T, G, M, K. You can also use the power-of-two equivalents: Ei, Pi, Ti, Gi, Mi, Ki.
+                 For instance, "1Gi" stands for 1 Gigabyte, and "500Mi" stands for 500 megabytes. Using other formats
+                 will make the jobs fail as Kubernetes won't recognize the assignment.
+
+                 For more details on the Kubernetes resources management, see:
+                 https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/
+                 -->
+        </destination>
         <destination id="god" runner="godocker">
             <!-- The following are configurations for the container -->
             <param id="docker_enabled">true</param>
@@ -997,12 +1070,12 @@
             <param id="docker_enabled">true</param>
             <param id="docker_memory">512</param>
             <param id="docker_cpu">2</param>
-            <param id="volumes">/directory/</param>
+            <param id="volumes">host_path:container_path:mode</param>
             <!-- Directory which is mounted to the container and is parent of
                  the  `job_working_directory`, `file_path`, `new_file_path`
-                 directories. Directories of the data used by tools are
-                 included as well.-->
-            <param id="max_retries">2</param>
+                 directories. Other directories of the data used by tools can
+                 be mounted as well, separated by commas.-->
+            <param id="max_retries">0</param>
             <!-- Number of retries to attempt if a command returns a non-zero status -->
         </destination>
 

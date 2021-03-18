@@ -1,7 +1,6 @@
 """
 Contains the main interface in the Universe class
 """
-from __future__ import absolute_import
 
 import logging
 import os
@@ -14,10 +13,11 @@ from webob.exc import (
 )
 
 from galaxy import (
-    managers,
     web
 )
+from galaxy.managers.histories import HistoryManager, HistorySerializer
 from galaxy.model.item_attrs import UsesAnnotations
+from galaxy.structured_app import StructuredApp
 from galaxy.util import (
     FILENAME_VALID_CHARS,
     listify,
@@ -25,6 +25,7 @@ from galaxy.util import (
     unicodify,
 )
 from galaxy.webapps.base import controller
+from ..api import depends
 
 log = logging.getLogger(__name__)
 
@@ -34,11 +35,11 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
     """
     Controller class that maps to the url root of Galaxy (i.e. '/').
     """
+    history_manager: HistoryManager = depends(HistoryManager)
+    history_serializer: HistorySerializer = depends(HistorySerializer)
 
-    def __init__(self, app):
-        super(RootController, self).__init__(app)
-        self.history_manager = managers.histories.HistoryManager(app)
-        self.history_serializer = managers.histories.HistorySerializer(app)
+    def __init__(self, app: StructuredApp):
+        super().__init__(app)
 
     @web.expose
     def default(self, trans, target1=None, target2=None, **kwd):
@@ -79,10 +80,20 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
         return self._bootstrapped_client(trans)
 
     @web.expose
-    def login(self, trans, redirect=None, **kwd):
+    def login(self, trans, redirect=None, is_logout_redirect=False, **kwd):
         """
         User login path for client-side.
         """
+        # directly redirect to oidc provider if 1) enable_oidc is True, 2)
+        # there is only one oidc provider, 3) auth_conf.xml has no authenticators
+        if (trans.app.config.enable_oidc
+                and len(trans.app.config.oidc) == 1
+                and len(trans.app.auth_manager.authenticators) == 0
+                and is_logout_redirect is False):
+            provider = next(iter(trans.app.config.oidc.keys()))
+            success, message, redirect_uri = trans.app.authnz_manager.authenticate(provider, trans)
+            if success:
+                return trans.response.send_redirect(redirect_uri)
         return self.template(trans, 'login',
                              redirect=redirect,
                              # an installation may have it's own welcome_url - show it here if they've set that
@@ -109,7 +120,7 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
                     if tagged_tool.tool_id not in results:
                         results.append(tagged_tool.tool_id)
             if trans.user:
-                trans.user.preferences['selected_tool_tags'] = ','.join([tag.name for tag in tags])
+                trans.user.preferences['selected_tool_tags'] = ','.join(tag.name for tag in tags)
                 trans.sa_session.flush()
         elif trans.user:
             trans.user.preferences['selected_tool_tags'] = ''
@@ -176,12 +187,12 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
                 trans.response.set_content_type(data.get_mime())
                 if tofile:
                     fStat = os.stat(data.file_name)
-                    trans.response.headers['Content-Length'] = int(fStat.st_size)
+                    trans.response.headers['Content-Length'] = str(fStat.st_size)
                     if toext[0:1] != ".":
                         toext = "." + toext
                     fname = data.name
                     fname = ''.join(c in FILENAME_VALID_CHARS and c or '_' for c in fname)[0:150]
-                    trans.response.headers["Content-Disposition"] = 'attachment; filename="GalaxyHistoryItem-%s-[%s]%s"' % (data.hid, fname, toext)
+                    trans.response.headers["Content-Disposition"] = f'attachment; filename="GalaxyHistoryItem-{data.hid}-[{fname}]{toext}"'
                 trans.log_event("Display dataset id: %s" % str(id))
                 try:
                     return open(data.file_name, 'rb')
@@ -205,7 +216,7 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
             current_user_roles = trans.get_current_user_roles()
             if authz_method == 'rbac' and trans.app.security_agent.can_access_dataset(current_user_roles, data):
                 trans.response.set_content_type(data.get_mime())
-                trans.log_event("Formatted dataset id %s for display at %s" % (str(id), display_app))
+                trans.log_event("Formatted dataset id {} for display at {}".format(str(id), display_app))
                 return data.as_display_type(display_app, **kwd)
             elif authz_method == 'display_at' and trans.app.host_security_agent.allow_action(trans.request.remote_addr,
                                                                                              data.permitted_actions.DATASET_ACCESS,
@@ -267,10 +278,10 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
             trans.sa_session.flush()
             if not user_history.datasets:
                 trans.set_history(new_history)
-            trans.log_event("History imported, id: %s, name: '%s': " % (str(new_history.id), new_history.name))
+            trans.log_event("History imported, id: {}, name: '{}': ".format(str(new_history.id), new_history.name))
             return trans.show_ok_message("""
-                History "%s" has been imported. Click <a href="%s">here</a>
-                to begin.""" % (new_history.name, web.url_for('/')))
+                History "{}" has been imported. Click <a href="{}">here</a>
+                to begin.""".format(new_history.name, web.url_for('/')))
         elif not user_history.datasets or confirm:
             new_history = import_history.copy()
             new_history.name = "imported: " + new_history.name
@@ -286,10 +297,10 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
             trans.sa_session.add(new_history)
             trans.sa_session.flush()
             trans.set_history(new_history)
-            trans.log_event("History imported, id: %s, name: '%s': " % (str(new_history.id), new_history.name))
+            trans.log_event("History imported, id: {}, name: '{}': ".format(str(new_history.id), new_history.name))
             return trans.show_ok_message("""
-                History "%s" has been imported. Click <a href="%s">here</a>
-                to begin.""" % (new_history.name, web.url_for('/')))
+                History "{}" has been imported. Click <a href="{}">here</a>
+                to begin.""".format(new_history.name, web.url_for('/')))
         return trans.show_warn_message("""
             Warning! If you import this history, you will lose your current
             history. Click <a href="%s">here</a> to confirm.
@@ -385,9 +396,9 @@ class RootController(controller.JSAppLauncher, UsesAnnotations):
         """
         rval = ""
         for k in trans.request.headers:
-            rval += "%s: %s <br/>" % (k, trans.request.headers[k])
+            rval += "{}: {} <br/>".format(k, trans.request.headers[k])
         for k in kwd:
-            rval += "%s: %s <br/>" % (k, kwd[k])
+            rval += "{}: {} <br/>".format(k, kwd[k])
             if isinstance(kwd[k], cgi_FieldStorage):
                 rval += "-> %s" % kwd[k].file.read()
         return rval

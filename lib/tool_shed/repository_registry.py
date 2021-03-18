@@ -3,14 +3,14 @@ import logging
 from sqlalchemy import and_, false, or_
 
 import tool_shed.repository_types.util as rt_util
-from galaxy.webapps.tool_shed import model
 from tool_shed.util import hg_util
 from tool_shed.util import metadata_util
+from tool_shed.webapp import model
 
 log = logging.getLogger(__name__)
 
 
-class Registry(object):
+class Registry:
 
     def __init__(self, app):
         log.debug("Loading the repository registry...")
@@ -196,7 +196,7 @@ class Registry(object):
         # The received repository has been determined to be level one certified.
         name = str(repository.name)
         owner = str(repository.user.username)
-        tip_changeset_hash = repository.tip(self.app)
+        tip_changeset_hash = repository.tip()
         if tip_changeset_hash != hg_util.INITIAL_CHANGELOG_HASH:
             certified_level_one_tuple = (name, owner, tip_changeset_hash)
             if repository.type == rt_util.REPOSITORY_SUITE_DEFINITION:
@@ -261,7 +261,7 @@ class Registry(object):
                 if not repository.deleted and not repository.deprecated:
                     is_valid = self.is_valid(repository)
                     encoded_repository_id = self.app.security.encode_id(repository.id)
-                    tip_changeset_hash = repository.tip(self.app)
+                    tip_changeset_hash = repository.tip()
                     repository_metadata = metadata_util.get_repository_metadata_by_changeset_revision(self.app,
                                                                                                       encoded_repository_id,
                                                                                                       tip_changeset_hash)
@@ -347,13 +347,13 @@ class Registry(object):
 
     @property
     def sa_session(self):
-        return self.app.model.context.current
+        return self.app.model.session
 
     def unload_certified_level_one_repository_and_suite_tuple(self, repository):
         # The received repository has been determined to be level one certified.
         name = str(repository.name)
         owner = str(repository.user.username)
-        tip_changeset_hash = repository.tip(self.app)
+        tip_changeset_hash = repository.tip()
         if tip_changeset_hash != hg_util.INITIAL_CHANGELOG_HASH:
             certified_level_one_tuple = (name, owner, tip_changeset_hash)
             if repository.type == rt_util.REPOSITORY_SUITE_DEFINITION:

@@ -14,7 +14,7 @@ SUFFIX_TO_BYTES = {
 }
 
 
-class ByteSize(object):
+class ByteSize:
     """Convert multiples of bytes to various units."""
 
     def __init__(self, value):
@@ -41,11 +41,11 @@ class ByteSize(object):
         new_value = int(self.value / SUFFIX_TO_BYTES[unit])
         if not as_string:
             return new_value
-        return "{value}{suffix}".format(value=new_value, suffix=unit)
+        return f"{new_value}{unit}"
 
 
 def parse_bytesize(value):
-    if isinstance(value, int):
+    if isinstance(value, int) or isinstance(value, float):
         # Assume bytes
         return value
     value = value.upper()
@@ -62,7 +62,7 @@ def parse_bytesize(value):
         try:
             value = float(value)
         except ValueError:
-            raise ValueError("{value} is not a valid integer or float value".format(value=value))
+            raise ValueError(f"{value} is not a valid integer or float value")
     if found_suffix:
         value = value * SUFFIX_TO_BYTES[found_suffix]
     return value

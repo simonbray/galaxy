@@ -77,22 +77,22 @@ def test_choose_one_unhashed():
     rule_helper = __rule_helper()
 
     # Random choices if hash not set.
-    chosen_ones = set([])
+    chosen_ones = set()
     __do_a_bunch(lambda: chosen_ones.add(rule_helper.choose_one(['a', 'b'])))
 
-    assert chosen_ones == set(['a', 'b'])
+    assert chosen_ones == {'a', 'b'}
 
 
 def test_choose_one_hashed():
     rule_helper = __rule_helper()
 
     # Hashed, so all choosen ones should be the same...
-    chosen_ones = set([])
+    chosen_ones = set()
     __do_a_bunch(lambda: chosen_ones.add(rule_helper.choose_one(['a', 'b'], hash_value=1234)))
     assert len(chosen_ones) == 1
 
     # ... also can verify hashing on strings
-    chosen_ones = set([])
+    chosen_ones = set()
     __do_a_bunch(lambda: chosen_ones.add(rule_helper.choose_one(['a', 'b'], hash_value="i am a string")))
 
     assert len(chosen_ones) == 1
@@ -102,7 +102,7 @@ def test_job_hash_unique_by_default():
     rule_helper = __rule_helper()
     job1, job2 = __two_jobs_in_a_history()
 
-    rule_helper.job_hash(job1) != rule_helper.job_hash(job2)
+    assert rule_helper.job_hash(job1) != rule_helper.job_hash(job2)
 
 
 def test_job_hash_history():
@@ -163,7 +163,7 @@ def __two_jobs():
 
 
 def __do_a_bunch(work):
-    for i in range(20):
+    for _ in range(20):
         work()
 
 
@@ -180,7 +180,7 @@ def __rule_helper():
     return rule_helper
 
 
-class MockApp(object):
+class MockApp:
 
     def __init__(self):
         self.config = bunch.Bunch()

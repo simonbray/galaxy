@@ -5,24 +5,32 @@ import os
 import shutil
 import tempfile
 
+from sqlalchemy.orm.scoping import scoped_session
+
 from galaxy import (
+    di,
     model,
     objectstore,
-    quota
+    quota,
 )
 from galaxy.auth import AuthManager
 from galaxy.datatypes import registry
 from galaxy.jobs.manager import NoopManager
+from galaxy.managers.users import UserManager
 from galaxy.model import mapping, tags
+from galaxy.model.base import SharedModelMapping
+from galaxy.model.mapping import GalaxyModelMapping
 from galaxy.security import idencoding
+from galaxy.structured_app import BasicApp, StructuredApp
 from galaxy.tool_util.deps.containers import NullContainerFinder
+from galaxy.util import StructuredExecutionTimer
 from galaxy.util.bunch import Bunch
 from galaxy.util.dbkeys import GenomeBuilds
 from galaxy.web_stack import ApplicationStack
 
 
 # =============================================================================
-class OpenObject(object):
+class OpenObject:
     pass
 
 
@@ -54,18 +62,26 @@ def buildMockEnviron(**kwargs):
     return environ
 
 
-class MockApp(object):
+class MockApp(di.Container):
 
     def __init__(self, config=None, **kwargs):
+        super().__init__()
+        self[BasicApp] = self
+        self[StructuredApp] = self
         self.config = config or MockAppConfig(**kwargs)
         self.security = self.config.security
+        self[idencoding.IdEncodingHelper] = self.security
         self.name = kwargs.get('name', 'galaxy')
         self.object_store = objectstore.build_object_store_from_config(self.config)
         self.model = mapping.init("/tmp", self.config.database_connection, create_tables=True, object_store=self.object_store)
+        self[SharedModelMapping] = self.model
+        self[GalaxyModelMapping] = self.model
+        self[scoped_session] = self.model.context
         self.security_agent = self.model.security_agent
         self.visualizations_registry = MockVisualizationsRegistry()
         self.tag_handler = tags.GalaxyTagHandler(self.model.context)
-        self.quota_agent = quota.QuotaAgent(self.model)
+        self[tags.GalaxyTagHandler] = self.tag_handler
+        self.quota_agent = quota.DatabaseQuotaAgent(self.model)
         self.init_datatypes()
         self.job_config = Bunch(
             dynamic_params=None,
@@ -79,7 +95,9 @@ class MockApp(object):
         self.genome_builds = GenomeBuilds(self)
         self.job_manager = NoopManager()
         self.application_stack = ApplicationStack()
-        self.auth_manager = AuthManager(self)
+        self.auth_manager = AuthManager(self.config)
+        self.user_manager = UserManager(self)
+        self.execution_timer_factory = Bunch(get_timer=StructuredExecutionTimer)
 
         def url_for(*args, **kwds):
             return "/mock/url"
@@ -97,7 +115,7 @@ class MockApp(object):
         return True
 
 
-class MockLock(object):
+class MockLock:
     def __enter__(self):
         pass
 
@@ -107,22 +125,34 @@ class MockLock(object):
 
 class MockAppConfig(Bunch):
 
+    class MockSchema(Bunch):
+        pass
+
     def __init__(self, root=None, **kwargs):
         Bunch.__init__(self, **kwargs)
-        root = root or '/tmp'
+        if not root:
+            root = tempfile.mkdtemp()
+            self._remove_root = True
+        else:
+            self._remove_root = False
+        self.schema = self.MockSchema()
         self.security = idencoding.IdEncodingHelper(id_secret='6e46ed6483a833c100e68cc3f1d0dd76')
         self.database_connection = kwargs.get('database_connection', "sqlite:///:memory:")
         self.use_remote_user = kwargs.get('use_remote_user', False)
-        self.data_dir = '/tmp'
-        self.file_path = '/tmp'
-        self.jobs_directory = '/tmp'
-        self.new_file_path = '/tmp'
-        self.tool_data_path = '/tmp'
+        self.data_dir = os.path.join(root, 'database')
+        self.file_path = os.path.join(self.data_dir, 'files')
+        self.jobs_directory = os.path.join(self.data_dir, 'jobs_directory')
+        self.new_file_path = os.path.join(self.data_dir, 'tmp')
+        self.tool_data_path = os.path.join(root, 'tool-data')
+        self.tool_dependency_dir = None
         self.metadata_strategy = 'legacy'
 
         self.object_store_config_file = ''
         self.object_store = 'disk'
         self.object_store_check_old_style = False
+        self.object_store_cache_path = '/tmp/cache'
+        self.umask = os.umask(0o77)
+        self.gid = os.getgid()
 
         self.user_activation_on = False
         self.new_user_dataset_access_role_default_private = False
@@ -144,15 +174,20 @@ class MockAppConfig(Bunch):
         self.len_file_path = os.path.join('tool-data', 'shared', 'ucsc', 'chrom')
         self.builds_file_path = os.path.join('tool-data', 'shared', 'ucsc', 'builds.txt.sample')
 
-        self.migrated_tools_config = "/tmp/migrated_tools_conf.xml"
+        self.shed_tool_config_file = "config/shed_tool_conf.xml"
+        self.shed_tool_config_file_set = False
+        self.enable_beta_edam_toolbox = False
         self.preserve_python_environment = "always"
         self.enable_beta_gdpr = False
-        self.legacy_eager_objectstore_initialization = True
 
         self.version_major = "19.09"
 
         # set by MockDir
         self.root = root
+        self.enable_tool_document_cache = False
+        self.tool_cache_data_dir = os.path.join(root, 'tool_cache')
+        self.delay_tool_initialization = True
+        self.external_chown_script = None
 
         self.config_file = None
 
@@ -161,20 +196,27 @@ class MockAppConfig(Bunch):
         return self.dict()
 
     def __getattr__(self, name):
+        # Handle the automatic [option]_set options: for tests, assume none are set
+        if name == 'is_set':
+            return lambda x: False
         # Handle the automatic config file _set options
         if name.endswith('_file_set'):
             return False
-        return super(MockAppConfig, self).__getattr__(name)
+        raise AttributeError(name)
+
+    def __del__(self):
+        if self._remove_root:
+            shutil.rmtree(self.root)
 
 
-class MockWebapp(object):
+class MockWebapp:
 
     def __init__(self, **kwargs):
         self.name = kwargs.get('name', 'galaxy')
         self.security = idencoding.IdEncodingHelper(id_secret='6e46ed6483a833c100e68cc3f1d0dd76')
 
 
-class MockTrans(object):
+class MockTrans:
 
     def __init__(self, app=None, user=None, history=None, **kwargs):
         self.app = app or MockApp(**kwargs)
@@ -185,6 +227,7 @@ class MockTrans(object):
         self.error_message = None
         self.anonymous = False
         self.debug = True
+        self.user_is_admin = True
 
         self.galaxy_session = None
         self.__user = user
@@ -192,7 +235,7 @@ class MockTrans(object):
         self.history = history
 
         self.request = Bunch(headers={}, body=None)
-        self.response = Bunch(headers={}, set_content_type=lambda i : None)
+        self.response = Bunch(headers={}, set_content_type=lambda i: None)
 
     def check_csrf_token(self, payload):
         pass
@@ -231,14 +274,14 @@ class MockTrans(object):
         return template.render(**kwargs)
 
 
-class MockVisualizationsRegistry(object):
+class MockVisualizationsRegistry:
     BUILT_IN_VISUALIZATIONS = ['trackster']
 
     def get_visualizations(self, trans, target):
         return []
 
 
-class MockDir(object):
+class MockDir:
 
     def __init__(self, structure_dict, where=None):
         self.structure_dict = structure_dict
@@ -267,7 +310,7 @@ class MockDir(object):
         shutil.rmtree(self.root_path)
 
 
-class MockTemplateHelpers(object):
+class MockTemplateHelpers:
     def js(*js_files):
         pass
 

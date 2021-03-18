@@ -22,10 +22,10 @@ log = logging.getLogger(__name__)
 
 
 class GalaxyPackageDependency(Dependency):
-    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['script', 'path', 'version', 'name']
+    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['script', 'path', 'version', 'name', 'dependency_resolver']
     dependency_type = 'galaxy_package'
 
-    def __init__(self, script, path, name, type, version, exact=True):
+    def __init__(self, script, path, name, type, version, exact=True, dependency_resolver=None):
         self.script = script
         self.path = path
         self.name = name
@@ -33,6 +33,7 @@ class GalaxyPackageDependency(Dependency):
         self.version = version
         self._exact = exact
         assert self.script is not None or self.path is not None
+        self.dependency_resolver = dependency_resolver
 
     @property
     def exact(self):
@@ -41,9 +42,9 @@ class GalaxyPackageDependency(Dependency):
     def shell_commands(self):
         base_path = self.path
         if self.type == 'package' and self.script is None:
-            commands = 'PACKAGE_BASE=%s; export PACKAGE_BASE; PATH="%s/bin:$PATH"; export PATH' % (base_path, base_path)
+            commands = f'PACKAGE_BASE={base_path}; export PACKAGE_BASE; PATH="{base_path}/bin:$PATH"; export PATH'
         else:
-            commands = 'PACKAGE_BASE=%s; export PACKAGE_BASE; . %s' % (base_path, self.script)
+            commands = f'PACKAGE_BASE={base_path}; export PACKAGE_BASE; . {self.script}'
         return commands
 
 
@@ -95,9 +96,9 @@ class BaseGalaxyPackageDependencyResolver(DependencyResolver, UsesToolDependency
     def _galaxy_package_dep(self, path, version, name, type, exact):
         script = join(path, 'env.sh')
         if exists(script):
-            return self.dependency_type(script, path, name, type, version, exact)
+            return self.dependency_type(script, path, name, type, version, exact, dependency_resolver=self)
         elif exists(join(path, 'bin')):
-            return self.dependency_type(None, path, name, type, version, exact)
+            return self.dependency_type(None, path, name, type, version, exact, dependency_resolver=self)
         return NullDependency(version=version, name=name)
 
 
@@ -105,12 +106,12 @@ class GalaxyPackageDependencyResolver(BaseGalaxyPackageDependencyResolver, Lista
     resolver_type = "galaxy_packages"
 
     def __init__(self, dependency_manager, **kwds):
-        super(GalaxyPackageDependencyResolver, self).__init__(dependency_manager, **kwds)
+        super().__init__(dependency_manager, **kwds)
         self._setup_mapping(dependency_manager, **kwds)
 
     def resolve(self, requirement, **kwds):
         requirement = self._expand_mappings(requirement)
-        return super(GalaxyPackageDependencyResolver, self).resolve(requirement, **kwds)
+        return super().resolve(requirement, **kwds)
 
     def list_dependencies(self):
         base_path = self.base_path

@@ -19,7 +19,7 @@ import tempfile
 import bx.seq.nib
 import bx.seq.twobit
 from bx.cookbook import doc_optparse
-from bx.intervals.io import Comment, Header
+from bx.tabular.io import Comment, Header
 
 from galaxy.datatypes.util import gff_util
 from galaxy.tools.util.galaxyops import parse_cols_arg
@@ -222,7 +222,7 @@ def __main__():
                 continue
         elif seq_path and os.path.isfile(seq_path):
             if not(twobitfile):
-                twobitfile = bx.seq.twobit.TwoBitFile(open(seq_path))
+                twobitfile = bx.seq.twobit.TwoBitFile(open(seq_path, 'rb'))
             try:
                 if options.gff and interpret_features:
                     # Create sequence from intervals within a feature.
@@ -260,7 +260,7 @@ def __main__():
             sequence = reverse_complement(sequence)
 
         if output_format == "fasta":
-            l = len(sequence)
+            len_sequence = len(sequence)
             c = 0
             if gff_format:
                 start, end = gff_util.convert_bed_coords_to_gff([start, end])
@@ -270,8 +270,8 @@ def __main__():
                 fout.write(">%s %s\n" % (meta_data, name))
             else:
                 fout.write(">%s\n" % meta_data)
-            while c < l:
-                b = min(c + 50, l)
+            while c < len_sequence:
+                b = min(c + 50, len_sequence)
                 fout.write("%s\n" % str(sequence[c:b]))
                 c = b
         else:  # output_format == "interval"

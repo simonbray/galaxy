@@ -7,14 +7,13 @@ LMOD @ Github: https://github.com/TACC/Lmod
 
 """
 import logging
+from io import StringIO
 from os import getenv
 from os.path import exists
 from subprocess import (
     PIPE,
     Popen
 )
-
-from six import StringIO
 
 from . import (
     Dependency,
@@ -64,9 +63,9 @@ class LmodDependencyResolver(DependencyResolver, MappableDependencyResolver):
             return NullDependency(version=version, name=name)
 
         if self.__has_module(name, version):
-            return LmodDependency(self, name, version, exact=True)
+            return LmodDependency(self, name, version, exact=True, dependency_resolver=self)
         elif self.versionless and self.__has_module(name, None):
-            return LmodDependency(self, name, None, exact=False)
+            return LmodDependency(self, name, None, exact=False, dependency_resolver=self)
 
         return NullDependency(version=version, name=name)
 
@@ -74,7 +73,7 @@ class LmodDependencyResolver(DependencyResolver, MappableDependencyResolver):
         return self.module_checker.has_module(name, version)
 
 
-class AvailModuleChecker(object):
+class AvailModuleChecker:
     """Parses the output of Lmod 'module avail' command to get the list of available modules."""
 
     def __init__(self, lmod_dependency_resolver, modulepath):
@@ -138,14 +137,15 @@ class AvailModuleChecker(object):
 class LmodDependency(Dependency):
     """Prepare the commands required to solve the dependency and add them to the script used to run a tool in Galaxy."""
 
-    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['module_name', 'module_version']
+    dict_collection_visible_keys = Dependency.dict_collection_visible_keys + ['module_name', 'module_version', 'dependency_resolver']
     dependency_type = 'lmod'
 
-    def __init__(self, lmod_dependency_resolver, module_name, module_version=None, exact=True):
+    def __init__(self, lmod_dependency_resolver, module_name, module_version=None, exact=True, dependency_resolver=None):
         self.lmod_dependency_resolver = lmod_dependency_resolver
         self.module_name = module_name
         self.module_version = module_version
         self._exact = exact
+        self.dependency_resolver = dependency_resolver
 
     @property
     def name(self):
@@ -163,7 +163,7 @@ class LmodDependency(Dependency):
         # Get the full module name in the form "tool_name/tool_version"
         module_to_load = self.module_name
         if self.module_version:
-            module_to_load = '%s/%s' % (self.module_name, self.module_version)
+            module_to_load = f'{self.module_name}/{self.module_version}'
 
         # Build the list of command to add to run script
         # Note that since "module" is actually a bash function, we are directy executing the underlying executable instead
@@ -171,7 +171,7 @@ class LmodDependency(Dependency):
         command = 'MODULEPATH=%s; ' % (self.lmod_dependency_resolver.modulepath)
         command += 'export MODULEPATH; '
         # - Execute the "module load" command (or rather the "/path/to/lmod load" command)
-        command += 'eval `%s load %s` ' % (self.lmod_dependency_resolver.lmodexec, module_to_load)
+        command += f'eval `{self.lmod_dependency_resolver.lmodexec} load {module_to_load}` '
         # - Execute the "settarg" command in addition if needed
         if self.lmod_dependency_resolver.settargexec is not None:
             command += '&& eval `%s -s sh`' % (self.lmod_dependency_resolver.settargexec)

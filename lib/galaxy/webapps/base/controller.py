@@ -2,8 +2,8 @@
 Contains functionality needed in every web interface
 """
 import logging
+from typing import Any, Optional
 
-from six import string_types
 from sqlalchemy import true
 from webob.exc import (
     HTTPBadRequest,
@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 SUCCESS, INFO, WARNING, ERROR = "done", "info", "warning", "error"
 
 
-class BaseController(object):
+class BaseController:
     """
     Base class for Galaxy web application controllers.
     """
@@ -167,7 +167,7 @@ class BaseUIController(BaseController):
             raise       # handled in the caller
         except Exception:
             log.exception("Exception in get_object check for %s %s:", class_name, str(id))
-            raise Exception('Server error retrieving %s id ( %s ).' % (class_name, str(id)))
+            raise Exception('Server error retrieving {} id ( {} ).'.format(class_name, str(id)))
 
     def message_exception(self, trans, message, sanitize=True):
         trans.response.status = 400
@@ -182,7 +182,7 @@ class BaseAPIController(BaseController):
                                              check_ownership=check_ownership, check_accessible=check_accessible, deleted=deleted)
 
         except exceptions.ItemDeletionException as e:
-            raise HTTPBadRequest(detail="Invalid %s id ( %s ) specified: %s" % (class_name, str(id), util.unicodify(e)))
+            raise HTTPBadRequest(detail="Invalid {} id ( {} ) specified: {}".format(class_name, str(id), util.unicodify(e)))
         except exceptions.MessageException as e:
             raise HTTPBadRequest(detail=e.err_msg)
         except Exception as e:
@@ -226,7 +226,7 @@ class BaseAPIController(BaseController):
     def _parse_serialization_params(self, kwd, default_view):
         view = kwd.get('view', None)
         keys = kwd.get('keys')
-        if isinstance(keys, string_types):
+        if isinstance(keys, str):
             keys = keys.split(',')
         return dict(view=view, keys=keys, default_view=default_view)
 
@@ -251,7 +251,7 @@ class JSAppLauncher(BaseUIController):
                            'total_disk_usage', 'nice_total_disk_usage', 'quota_percent', 'preferences')
 
     def __init__(self, app):
-        super(JSAppLauncher, self).__init__(app)
+        super().__init__(app)
         self.user_manager = users.UserManager(app)
         self.user_serializer = users.CurrentUserSerializer(app)
         self.config_serializer = configuration.ConfigSerializer(app)
@@ -275,6 +275,9 @@ class JSAppLauncher(BaseUIController):
         self._check_require_login(trans)
         return self._bootstrapped_client(trans, **kwd)
 
+    # This includes contextualized user options in the bootstrapped data; we
+    # don't want to cache it.
+    @web.do_not_cache
     def _bootstrapped_client(self, trans, app_name='analysis', **kwd):
         js_options = self._get_js_options(trans)
         js_options['config'].update(self._get_extended_config(trans))
@@ -289,38 +292,38 @@ class JSAppLauncher(BaseUIController):
         """
         root = root or web.url_for('/')
         js_options = {
-            'root'               : root,
-            'user'               : self.user_serializer.serialize(trans.user, self.USER_BOOTSTRAP_KEYS, trans=trans),
-            'config'             : self._get_site_configuration(trans),
-            'params'             : dict(trans.request.params),
-            'session_csrf_token' : trans.session_csrf_token,
+            'root': root,
+            'user': self.user_serializer.serialize(trans.user, self.USER_BOOTSTRAP_KEYS, trans=trans),
+            'config': self._get_site_configuration(trans),
+            'params': dict(trans.request.params),
+            'session_csrf_token': trans.session_csrf_token,
         }
         return js_options
 
     def _get_extended_config(self, trans):
         config = {
-            'active_view'                   : 'analysis',
-            'enable_cloud_launch'           : trans.app.config.get_bool('enable_cloud_launch', False),
-            'enable_webhooks'               : True if trans.app.webhooks_registry.webhooks else False,
-            # TODO: next two should be redundant - why can't we build one from the other?
-            'toolbox'                       : trans.app.toolbox.to_dict(trans, in_panel=False),
-            'toolbox_in_panel'              : trans.app.toolbox.to_dict(trans),
-            'message_box_visible'           : trans.app.config.message_box_visible,
-            'show_inactivity_warning'       : trans.app.config.user_activation_on and trans.user and not trans.user.active,
-            'tool_shed_urls'                : list(trans.app.tool_shed_registry.tool_sheds.values()) if trans.app.tool_shed_registry else [],
-            'tool_dynamic_configs'          : list(trans.app.toolbox.dynamic_conf_filenames())
+            'active_view': 'analysis',
+            'enable_cloud_launch': trans.app.config.get_bool('enable_cloud_launch', False),
+            'enable_webhooks': True if trans.app.webhooks_registry.webhooks else False,
+            'toolbox': trans.app.toolbox.to_dict(trans),
+            'message_box_visible': trans.app.config.message_box_visible,
+            'show_inactivity_warning': trans.app.config.user_activation_on and trans.user and not trans.user.active,
+            'tool_shed_urls': list(trans.app.tool_shed_registry.tool_sheds.values()) if trans.app.tool_shed_registry else [],
+            'tool_dynamic_configs': list(trans.app.toolbox.dynamic_conf_filenames())
         }
 
         # TODO: move to user
-        stored_workflow_menu_entries = config['stored_workflow_menu_entries'] = []
+        stored_workflow_menu_index = {}
+        stored_workflow_menu_entries = []
         for menu_item in getattr(trans.user, 'stored_workflow_menu_entries', []):
-            stored_workflow_menu_entries.append({
-                'encoded_stored_workflow_id': trans.security.encode_id(menu_item.stored_workflow_id),
-                'stored_workflow': {
+            encoded_stored_workflow_id = trans.security.encode_id(menu_item.stored_workflow_id)
+            if encoded_stored_workflow_id not in stored_workflow_menu_index:
+                stored_workflow_menu_index[encoded_stored_workflow_id] = True
+                stored_workflow_menu_entries.append({
+                    'id': encoded_stored_workflow_id,
                     'name': util.unicodify(menu_item.stored_workflow.name)
-                }
-            })
-
+                })
+        config['stored_workflow_menu_entries'] = stored_workflow_menu_entries
         return config
 
     def _get_site_configuration(self, trans):
@@ -336,18 +339,17 @@ class JSAppLauncher(BaseUIController):
             log.exception(exc)
             return {}
 
-    def template(self, trans, app_name, entry_fn='app', options=None, bootstrapped_data=None, masthead=True, **additional_options):
+    def template(self, trans, app_name: str, entry_fn: str = 'app', options=None, bootstrapped_data: Optional[dict] = None, masthead: Optional[bool] = True, **additional_options):
         """
         Render and return the single page mako template that starts the app.
 
-        `app_name` (string): the first portion of the webpack bundle to as the app.
-        `entry_fn` (string): the name of the window-scope function that starts the
-            app. Defaults to 'app'.
-        `bootstrapped_data` (dict): (optional) update containing any more data
-            the app may need.
-        `masthead` (boolean): (optional, default=True) include masthead elements in
-            the initial page dom.
-        `additional_options` (kwargs): update to the options sent to the app.
+        :param app_name: the first portion of the webpack bundle to as the app.
+        :param entry_fn: the name of the window-scope function that starts the
+                         app. Defaults to 'app'.
+        :param bootstrapped_data: update containing any more data
+                                  the app may need.
+        :param masthead: include masthead elements in the initial page dom.
+        :param additional_options: update to the options sent to the app.
         """
         options = options or self._get_js_options(trans)
         options.update(additional_options)
@@ -361,7 +363,7 @@ class JSAppLauncher(BaseUIController):
         )
 
 
-class Datatype(object):
+class Datatype:
     """Used for storing in-memory list of datatypes currently in the datatypes registry."""
 
     def __init__(self, extension, dtype, type_extension, mimetype, display_in_upload):
@@ -376,7 +378,7 @@ class Datatype(object):
 #
 
 
-class CreatesApiKeysMixin(object):
+class CreatesApiKeysMixin:
     """
     Mixing centralizing logic for creating API keys for user objects.
 
@@ -387,7 +389,7 @@ class CreatesApiKeysMixin(object):
         return api_keys.ApiKeyManager(trans.app).create_api_key(user)
 
 
-class SharableItemSecurityMixin(object):
+class SharableItemSecurityMixin:
     """ Mixin for handling security for sharable items. """
 
     def security_check(self, trans, item, check_ownership=False, check_accessible=False):
@@ -395,7 +397,7 @@ class SharableItemSecurityMixin(object):
         return managers_base.security_check(trans, item, check_ownership=check_ownership, check_accessible=check_accessible)
 
 
-class ExportsHistoryMixin(object):
+class ExportsHistoryMixin:
 
     def serve_ready_history_export(self, trans, jeha):
         assert jeha.ready
@@ -408,17 +410,15 @@ class ExportsHistoryMixin(object):
         archive = trans.app.object_store.get_filename(jeha.dataset)
         return open(archive, mode='rb')
 
-    def queue_history_export(self, trans, history, gzip=True, include_hidden=False, include_deleted=False):
+    def queue_history_export(self, trans, history, gzip=True, include_hidden=False, include_deleted=False, directory_uri=None, file_name=None):
         # Convert options to booleans.
-        if isinstance(gzip, string_types):
+        if isinstance(gzip, str):
             gzip = (gzip in ['True', 'true', 'T', 't'])
-        if isinstance(include_hidden, string_types):
+        if isinstance(include_hidden, str):
             include_hidden = (include_hidden in ['True', 'true', 'T', 't'])
-        if isinstance(include_deleted, string_types):
+        if isinstance(include_deleted, str):
             include_deleted = (include_deleted in ['True', 'true', 'T', 't'])
 
-        # Run job to do export.
-        history_exp_tool = trans.app.toolbox.get_tool('__EXPORT_HISTORY__')
         params = {
             'history_to_export': history,
             'compress': gzip,
@@ -426,25 +426,36 @@ class ExportsHistoryMixin(object):
             'include_deleted': include_deleted
         }
 
-        history_exp_tool.execute(trans, incoming=params, history=history, set_output_hid=True)
+        if directory_uri is None:
+            export_tool_id = '__EXPORT_HISTORY__'
+        else:
+            params['directory_uri'] = directory_uri
+            params['file_name'] = file_name or None
+            export_tool_id = '__EXPORT_HISTORY_TO_URI__'
+
+        # Run job to do export.
+        history_exp_tool = trans.app.toolbox.get_tool(export_tool_id)
+        job, _ = history_exp_tool.execute(trans, incoming=params, history=history, set_output_hid=True)
+        return job
 
 
-class ImportsHistoryMixin(object):
+class ImportsHistoryMixin:
 
     def queue_history_import(self, trans, archive_type, archive_source):
         # Run job to do import.
         history_imp_tool = trans.app.toolbox.get_tool('__IMPORT_HISTORY__')
-        incoming = {'__ARCHIVE_SOURCE__' : archive_source, '__ARCHIVE_TYPE__' : archive_type}
-        history_imp_tool.execute(trans, incoming=incoming)
+        incoming = {'__ARCHIVE_SOURCE__': archive_source, '__ARCHIVE_TYPE__': archive_type}
+        job, _ = history_imp_tool.execute(trans, incoming=incoming)
+        return job
 
 
-class UsesLibraryMixin(object):
+class UsesLibraryMixin:
 
     def get_library(self, trans, id, check_ownership=False, check_accessible=True):
-        l = self.get_object(trans, id, 'Library')
-        if check_accessible and not (trans.user_is_admin or trans.app.security_agent.can_access_library(trans.get_current_user_roles(), l)):
-            error("LibraryFolder is not accessible to the current user")
-        return l
+        library = self.get_object(trans, id, 'Library')
+        if check_accessible and not (trans.user_is_admin or trans.app.security_agent.can_access_library(trans.get_current_user_roles(), library)):
+            error("Library is not accessible to the current user")
+        return library
 
 
 class UsesLibraryMixinItems(SharableItemSecurityMixin):
@@ -473,8 +484,8 @@ class UsesLibraryMixinItems(SharableItemSecurityMixin):
     def can_current_user_add_to_library_item(self, trans, item):
         if not trans.user:
             return False
-        return (trans.user_is_admin or
-                trans.app.security_agent.can_add_library_item(trans.get_current_user_roles(), item))
+        return (trans.user_is_admin
+                or trans.app.security_agent.can_add_library_item(trans.get_current_user_roles(), item))
 
     def check_user_can_add_to_library_item(self, trans, item, check_accessible=True):
         """
@@ -733,10 +744,10 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
         # TODO: deleted
         # TODO: importable
         return {
-            'id'        : visualization.id,
-            'title'     : visualization.title,
-            'type'      : visualization.type,
-            'dbkey'     : visualization.dbkey,
+            'id': visualization.id,
+            'title': visualization.title,
+            'type': visualization.type,
+            'dbkey': visualization.dbkey,
         }
 
     def get_visualization_dict(self, visualization):
@@ -747,15 +758,15 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
         """
         return {
             'model_class': 'Visualization',
-            'id'         : visualization.id,
-            'title'      : visualization.title,
-            'type'       : visualization.type,
-            'user_id'    : visualization.user.id,
-            'dbkey'      : visualization.dbkey,
-            'slug'       : visualization.slug,
+            'id': visualization.id,
+            'title': visualization.title,
+            'type': visualization.type,
+            'user_id': visualization.user.id,
+            'dbkey': visualization.dbkey,
+            'slug': visualization.slug,
             # to_dict only the latest revision (allow older to be fetched elsewhere)
-            'latest_revision' : self.get_visualization_revision_dict(visualization.latest_revision),
-            'revisions' : [r.id for r in visualization.revisions],
+            'latest_revision': self.get_visualization_revision_dict(visualization.latest_revision),
+            'revisions': [r.id for r in visualization.revisions],
         }
 
     def get_visualization_revision_dict(self, revision):
@@ -764,12 +775,12 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
         NOTE: that encoding ids isn't done here should happen at the caller level.
         """
         return {
-            'model_class'      : 'VisualizationRevision',
-            'id'               : revision.id,
-            'visualization_id' : revision.visualization.id,
-            'title'            : revision.title,
-            'dbkey'            : revision.dbkey,
-            'config'           : revision.config,
+            'model_class': 'VisualizationRevision',
+            'id': revision.id,
+            'visualization_id': revision.visualization.id,
+            'title': revision.title,
+            'dbkey': revision.dbkey,
+            'config': revision.config,
         }
 
     def import_visualization(self, trans, id, user=None):
@@ -802,10 +813,11 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
         return imported_visualization
 
     def create_visualization(self, trans, type, title="Untitled Visualization", slug=None,
-                             dbkey=None, annotation=None, config={}, save=True):
+                             dbkey=None, annotation=None, config=None, save=True):
         """
         Create visualiation and first revision.
         """
+        config = config or {}
         visualization = self._create_visualization(trans, title, type, dbkey, slug, annotation, save)
         # TODO: handle this error structure better either in _create or here
         if isinstance(visualization, dict):
@@ -901,11 +913,12 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
             bookmarks = unpack_bookmarks(config['bookmarks'])
             vis_rev.config = {"view": view_content, "bookmarks": bookmarks}
             # Viewport from payload
-            if 'viewport' in config:
-                chrom = config['viewport']['chrom']
-                start = config['viewport']['start']
-                end = config['viewport']['end']
-                overview = config['viewport']['overview']
+            viewport = config.get('viewport')
+            if viewport:
+                chrom = viewport['chrom']
+                start = viewport['start']
+                end = viewport['end']
+                overview = viewport['overview']
                 vis_rev.config["viewport"] = {'chrom': chrom, 'start': start, 'end': end, 'overview': overview}
         else:
             # Default action is to save the config as is with no validation.
@@ -938,7 +951,7 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
 
         # -- Get tool definition and add input values from job. --
         tool_dict = tool.to_dict(trans, io_details=True)
-        tool_param_values = dict([(p.name, p.value) for p in job.parameters])
+        tool_param_values = {p.name: p.value for p in job.parameters}
         tool_param_values = tool.params_from_strings(tool_param_values, trans.app, ignore_errors=True)
 
         # Only get values for simple inputs for now.
@@ -980,7 +993,7 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
                     "dataset": trans.security.encode_dict_ids(dataset.to_dict()),
                     "prefs": prefs,
                     "mode": track_dict.get('mode', 'Auto'),
-                    "filters": track_dict.get('filters', {'filters' : track_data_provider.get_filters()}),
+                    "filters": track_dict.get('filters', {'filters': track_data_provider.get_filters()}),
                     "tool": self.get_tool_def(trans, dataset),
                     "tool_state": track_dict.get('tool_state', {})
                 }
@@ -1007,7 +1020,7 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
                 encoded_dbkey = dbkey
                 user = visualization.user
                 if 'dbkeys' in user.preferences and str(dbkey) in user.preferences['dbkeys']:
-                    encoded_dbkey = "%s:%s" % (user.username, dbkey)
+                    encoded_dbkey = f"{user.username}:{dbkey}"
                 return encoded_dbkey
 
             # Set tracks.
@@ -1024,7 +1037,7 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
                         tracks.append(pack_collection(drawable_dict))
 
             config = {"title": visualization.title,
-                      "vis_id": trans.security.encode_id(visualization.id),
+                      "vis_id": trans.security.encode_id(visualization.id) if visualization.id is not None else None,
                       "tracks": tracks,
                       "bookmarks": bookmarks,
                       "chrom": "",
@@ -1052,7 +1065,7 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
             "name": dataset.name,
             "dataset": trans.security.encode_dict_ids(dataset.to_dict()),
             "prefs": {},
-            "filters": {'filters' : track_data_provider.get_filters()},
+            "filters": {'filters': track_data_provider.get_filters()},
             "tool": self.get_tool_def(trans, dataset),
             "tool_state": {}
         }
@@ -1099,8 +1112,8 @@ class UsesVisualizationMixin(UsesLibraryMixinItems):
                 error("You are not allowed to access this dataset")
 
             if check_state and data.state == trans.model.Dataset.states.UPLOAD:
-                return trans.show_error_message("Please wait until this dataset finishes uploading " +
-                                                "before attempting to view it.")
+                return trans.show_error_message("Please wait until this dataset finishes uploading "
+                                                + "before attempting to view it.")
         return data
 
     # -- Helper functions --
@@ -1232,7 +1245,7 @@ class UsesStoredWorkflowMixin(SharableItemSecurityMixin, UsesAnnotations):
         # Copy workflow.
         imported_stored = model.StoredWorkflow()
         imported_stored.name = "imported: " + stored.name
-        workflow = stored.latest_workflow.copy()
+        workflow = stored.latest_workflow.copy(user=trans.user)
         workflow.stored_workflow = imported_stored
         imported_stored.latest_workflow = workflow
         imported_stored.user = trans.user
@@ -1249,24 +1262,6 @@ class UsesStoredWorkflowMixin(SharableItemSecurityMixin, UsesAnnotations):
         session.flush()
         return imported_stored
 
-    def _workflow_from_dict(self, trans, data, source=None, add_to_menu=False, publish=False, exact_tools=True, fill_defaults=False):
-        """
-        Creates a workflow from a dict. Created workflow is stored in the database and returned.
-        """
-        # TODO: replace this method with direct access to manager.
-        workflow_contents_manager = workflows.WorkflowContentsManager(self.app)
-        raw_workflow_description = workflow_contents_manager.ensure_raw_description(data)
-        created_workflow = workflow_contents_manager.build_workflow_from_raw_description(
-            trans,
-            raw_workflow_description,
-            source=source,
-            add_to_menu=add_to_menu,
-            publish=publish,
-            exact_tools=exact_tools,
-            fill_defaults=fill_defaults,
-        )
-        return created_workflow.stored_workflow, created_workflow.missing_tools
-
     def _workflow_to_dict(self, trans, stored):
         """
         Converts a workflow to a dict of attributes suitable for exporting.
@@ -1278,7 +1273,7 @@ class UsesStoredWorkflowMixin(SharableItemSecurityMixin, UsesAnnotations):
         )
 
 
-class UsesFormDefinitionsMixin(object):
+class UsesFormDefinitionsMixin:
     """Mixin for controllers that use Galaxy form objects."""
 
     def get_all_forms(self, trans, all_versions=False, filter=None, form_type='All'):
@@ -1346,11 +1341,11 @@ class UsesFormDefinitionsMixin(object):
         return values
 
 
-class SharableMixin(object):
+class SharableMixin:
     """ Mixin for a controller that manages an item that can be shared. """
 
-    manager = None
-    serializer = None
+    manager: Any = None
+    serializer: Any = None
 
     # -- Implemented methods. --
 
@@ -1416,22 +1411,24 @@ class SharableMixin(object):
         skipped = False
         class_name = self.manager.model_class.__name__
         item = self.get_object(trans, id, class_name, check_ownership=True, check_accessible=True, deleted=False)
-        if payload and payload.get("action"):
-            action = payload.get("action")
+        actions = []
+        if payload:
+            actions += payload.get("action").split("-")
+        for action in actions:
             if action == "make_accessible_via_link":
                 self._make_item_accessible(trans.sa_session, item)
-                if hasattr(item, "has_possible_members") and item.has_possible_members and payload.get("make_members_public", False):
-                    shared, skipped = self._make_members_public(trans, item)
+                if hasattr(item, "has_possible_members") and item.has_possible_members:
+                    skipped = self._make_members_public(trans, item)
             elif action == "make_accessible_and_publish":
                 self._make_item_accessible(trans.sa_session, item)
-                if hasattr(item, "has_possible_members") and item.has_possible_members and payload.get("make_members_public", False):
-                    shared, skipped = self._make_members_public(trans, item)
+                if hasattr(item, "has_possible_members") and item.has_possible_members:
+                    skipped = self._make_members_public(trans, item)
                 item.published = True
             elif action == "publish":
                 if item.importable:
                     item.published = True
-                    if hasattr(item, "has_possible_members") and item.has_possible_members and payload.get("make_members_public", False):
-                        shared, skipped = self._make_members_public(trans, item)
+                    if hasattr(item, "has_possible_members") and item.has_possible_members:
+                        skipped = self._make_members_public(trans, item)
                 else:
                     raise exceptions.MessageException("%s not importable." % class_name)
             elif action == "disable_link_access":
@@ -1478,7 +1475,7 @@ class SharableMixin(object):
                 else:
                     log.warning("User without permissions tried to make dataset with id: %s public", dataset.id)
                     skipped = True
-        return item, skipped
+        return skipped
 
     # -- Abstract methods. --
 
@@ -1510,7 +1507,7 @@ class SharableMixin(object):
         raise NotImplementedError()
 
 
-class UsesQuotaMixin(object):
+class UsesQuotaMixin:
 
     def get_quota(self, trans, id, check_ownership=False, check_accessible=False, deleted=None):
         return self.get_object(trans, id, 'Quota', check_ownership=False, check_accessible=False, deleted=deleted)
@@ -1518,7 +1515,7 @@ class UsesQuotaMixin(object):
 
 class UsesTagsMixin(SharableItemSecurityMixin):
 
-    def get_tag_handler(self, trans):
+    def get_tag_handler(self, trans) -> tags.GalaxyTagHandler:
         return trans.app.tag_handler
 
     def _get_user_tags(self, trans, item_class_name, id):
@@ -1664,25 +1661,14 @@ class UsesExtendedMetadataMixin(SharableItemSecurityMixin):
         """
         if isinstance(meta, dict):
             for a in meta:
-                for path, value in self._scan_json_block(meta[a], prefix + "/" + a):
-                    yield path, value
+                yield from self._scan_json_block(meta[a], prefix + "/" + a)
         elif isinstance(meta, list):
             for i, a in enumerate(meta):
-                for path, value in self._scan_json_block(a, prefix + "[%d]" % (i)):
-                    yield path, value
+                yield from self._scan_json_block(a, prefix + "[%d]" % (i))
         else:
             # BUG: Everything is cast to string, which can lead to false positives
             # for cross type comparisions, ie "True" == True
             yield prefix, ("%s" % (meta)).encode("utf8", errors='replace')
-
-
-class ControllerUnavailable(Exception):
-    """
-    Deprecated: `BaseController` used to be available under the name `Root`
-    """
-    pass
-
-# ---- Utility methods -------------------------------------------------------
 
 
 def sort_by_attr(seq, attr):

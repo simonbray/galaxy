@@ -4,21 +4,15 @@ import time
 
 import psutil
 
-from base import integration_util  # noqa: I202
-from base.populators import (
+from galaxy_test.base.populators import (
     DatasetPopulator,
 )
+from galaxy_test.driver import integration_util
 
 
-class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
+class CancelsJob:
 
-    framework_tool_and_types = True
-
-    def setUp(self):
-        super(LocalJobCancellationTestCase, self).setUp()
-        self.dataset_populator = DatasetPopulator(self.galaxy_interactor)
-
-    def setup_cat_data_and_sleep(self, history_id):
+    def _setup_cat_data_and_sleep(self, history_id):
         hda1 = self.dataset_populator.new_dataset(history_id, content="1 2 3")
         running_inputs = {
             "input1": {"src": "hda", "id": hda1["id"]},
@@ -31,14 +25,26 @@ class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
             assert_ok=False,
         ).json()
         job_dict = running_response["jobs"][0]
-        return job_dict
+        return job_dict["id"]
+
+    def _wait_for_job_running(self, job_id):
+        self.galaxy_interactor.wait_for(lambda: self._get("jobs/%s" % job_id).json()['state'] != 'running',
+                                        what="Wait for job to start running",
+                                        maxseconds=60)
+
+
+class LocalJobCancellationTestCase(CancelsJob, integration_util.IntegrationTestCase):
+
+    framework_tool_and_types = True
+
+    def setUp(self):
+        super().setUp()
+        self.dataset_populator = DatasetPopulator(self.galaxy_interactor)
 
     def test_cancel_job_with_admin_message(self):
         with self.dataset_populator.test_history() as history_id:
-            job_dict = self.setup_cat_data_and_sleep(history_id)
-            self.galaxy_interactor.wait_for(lambda: self._get("jobs/%s" % job_dict['id']).json()['state'] != 'running',
-                                            what="Wait for job to start running",
-                                            maxseconds=60)
+            job_id = self._setup_cat_data_and_sleep(history_id)
+            self._wait_for_job_running(job_id)
             app = self._app
             sa_session = app.model.context.current
             Job = app.model.Job
@@ -48,7 +54,7 @@ class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
             job.set_state(app.model.Job.states.DELETED_NEW)
             sa_session.add(job)
             sa_session.flush()
-            self.galaxy_interactor.wait_for(lambda: self._get("jobs/%s" % job_dict['id']).json()['state'] != 'error',
+            self.galaxy_interactor.wait_for(lambda: self._get("jobs/%s" % job_id).json()['state'] != 'error',
                                             what="Wait for job to end in error",
                                             maxseconds=60)
 
@@ -56,7 +62,7 @@ class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
         """
         """
         with self.dataset_populator.test_history() as history_id:
-            job_dict = self.setup_cat_data_and_sleep(history_id)
+            job_id = self._setup_cat_data_and_sleep(history_id)
 
             app = self._app
             sa_session = app.model.context.current
@@ -80,12 +86,12 @@ class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
             pid_exists = psutil.pid_exists(external_id)
             assert pid_exists
 
-            delete_response = self.dataset_populator.cancel_job(job_dict["id"])
+            delete_response = self.dataset_populator.cancel_job(job_id)
             assert delete_response.json() is True
 
             state = None
             # Now make sure the job becomes complete.
-            for i in range(100):
+            for _ in range(100):
                 sa_session.refresh(job)
                 state = job.state
                 if state == app.model.Job.states.DELETED:
@@ -93,12 +99,12 @@ class LocalJobCancellationTestCase(integration_util.IntegrationTestCase):
                 time.sleep(.1)
 
             # Now make sure the pid is actually killed.
-            for i in range(100):
+            for _ in range(100):
                 if not pid_exists:
                     break
                 pid_exists = psutil.pid_exists(external_id)
                 time.sleep(.1)
 
-            final_state = "pid exists? %s, final db job state %s" % (pid_exists, state)
+            final_state = f"pid exists? {pid_exists}, final db job state {state}"
             assert state == app.model.Job.states.DELETED, final_state
             assert not pid_exists, final_state

@@ -85,7 +85,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
     seq = ''
     title = None
 
-    for i, line in enumerate(open(ref_file)):
+    for line in open(ref_file):
         line = line.rstrip()
         if not line or line.startswith('#'):
             continue
@@ -108,7 +108,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
 
     # find hits: one end and/or the other
     hits = {}
-    for i, line in enumerate(open(result_file)):
+    for line in open(result_file):
         line = line.rstrip()
         if not line or line.startswith('#'):
             continue
@@ -144,7 +144,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
     score = ''
     for num_score_file in range(len(all_score_file)):
         score_file = all_score_file[num_score_file]
-        for i, line in enumerate(open(score_file)):
+        for line in open(score_file):
             line = line.rstrip()
             if not line or line.startswith('#'):
                 continue
@@ -198,14 +198,14 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
             end1_data = hits[readkey]['1']
             end2_data = hits[readkey]['2']
 
-            for i, end1_hit in enumerate(end1_data):
+            for end1_hit in end1_data:
                 crin_strand = {'+': False, '-': False}
                 crin_insertSize = {'+': False, '-': False}
 
                 crin_strand[end1_hit[0]] = True
                 crin_insertSize[end1_hit[0]] = int(end1_hit[2])
 
-                for j, end2_hit in enumerate(end2_data):
+                for end2_hit in end2_data:
                     crin_strand[end2_hit[0]] = True
                     crin_insertSize[end2_hit[0]] = int(end2_hit[2])
 
@@ -315,7 +315,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
                                     scoreBx = hits_score[readkey][str(x + 1)].split()[read_loc]
 
                                 # 1-based on chrom_loc and read_loc
-                                pos_line = pos_line + '\t'.join([end_chrom, str(chrom_loc + 1), readkey + '/' + str(x + 1), str(read_loc + 1), chrAx, chrBx, scoreBx]) + '\n'
+                                pos_line = pos_line + '\t'.join((end_chrom, str(chrom_loc + 1), readkey + '/' + str(x + 1), str(read_loc + 1), chrAx, chrBx, scoreBx)) + '\n'
 
                             else:
                                 chrom_loc = end_chr_end - match_len + mappingIndex
@@ -330,7 +330,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
                                     scoreBx = hits_score[readkey][str(x + 1)].split()[read_loc]
 
                                 # 1-based on chrom_loc and read_loc
-                                rev_line = '\t'.join([end_chrom, str(chrom_loc + 1), readkey + '/' + str(x + 1), str(read_loc + 1), chrAx, chrBx, scoreBx]) + '\n' + rev_line
+                                rev_line = '\t'.join((end_chrom, str(chrom_loc + 1), readkey + '/' + str(x + 1), str(read_loc + 1), chrAx, chrBx, scoreBx)) + '\n' + rev_line
 
                             if end_chrom in chrom_cov:
                                 if chrom_loc in chrom_cov[end_chrom]:
@@ -350,7 +350,7 @@ def generate_sub_table(result_file, ref_file, score_files, table_outfile, hit_pe
     temp_table.close()
 
     # chrom-wide coverage
-    for i, line in enumerate(open(temp_table_name)):
+    for line in open(temp_table_name):
         line = line.rstrip()
         if not line or line.startswith('#'):
             continue
@@ -463,7 +463,7 @@ def convert_fastqsolexa_to_fasta_qual(infile_name, query_fasta, query_qual):
                 else:
                     stop_err('Invalid fastqsolexa format at line %d: the number of quality scores ( %d ) is not the same as bases ( %d ).' % (i + 1, quality_score_length, read_length))
 
-                for j, char in enumerate(line):
+                for char in line:
                     score = ord(char) - qual_score_startswith    # 64
                     qual = "%s%s " % (qual, str(score))
 
@@ -559,7 +559,7 @@ def __main__():
 
     # SHRiMP command
     if type_of_reads == 'single':
-        command = ' '.join([shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta, input_target_file, '>', shrimp_outfile, '2>', shrimp_log])
+        command = ' '.join((shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta, input_target_file, '>', shrimp_outfile, '2>', shrimp_log))
 
         try:
             os.system(command)
@@ -571,8 +571,8 @@ def __main__():
             stop_err(str(e))
 
     else:  # paired
-        command_end1 = ' '.join([shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta_end1, input_target_file, '>', shrimp_outfile, '2>', shrimp_log])
-        command_end2 = ' '.join([shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta_end2, input_target_file, '>>', shrimp_outfile, '2>>', shrimp_log])
+        command_end1 = ' '.join((shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta_end1, input_target_file, '>', shrimp_outfile, '2>', shrimp_log))
+        command_end2 = ' '.join((shrimp, '-s', spaced_seed, '-n', seed_matches_per_window, '-t', seed_hit_taboo_length, '-9', seed_generation_taboo_length, '-w', seed_window_length, '-o', max_hits_per_read, '-r', max_read_length, '-d', kmer, '-m', sw_match_value, '-i', sw_mismatch_value, '-g', sw_gap_open_ref, '-q', sw_gap_open_query, '-e', sw_gap_ext_ref, '-f', sw_gap_ext_query, '-h', sw_hit_threshold, query_fasta_end2, input_target_file, '>>', shrimp_outfile, '2>>', shrimp_log))
 
         try:
             os.system(command_end1)
@@ -591,7 +591,7 @@ def __main__():
     # check SHRiMP output: count number of lines
     num_hits = 0
     if shrimp_outfile:
-        for i, line in enumerate(open(shrimp_outfile)):
+        for line in open(shrimp_outfile):
             line = line.rstrip('\r\n')
             if not line or line.startswith('#'):
                 continue
@@ -604,7 +604,7 @@ def __main__():
     if num_hits == 0:   # no hits generated
         err_msg = ''
         if shrimp_log:
-            for i, line in enumerate(open(shrimp_log)):
+            for line in open(shrimp_log):
                 if line.startswith('error'):            # deal with memory error:
                     err_msg += line                     # error: realloc failed: Cannot allocate memory
                 if re.search('Reads Matched', line):    # deal with zero hits

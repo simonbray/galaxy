@@ -1,8 +1,7 @@
 import logging
 import os
-from collections import OrderedDict
 
-from galaxy.tool_util.cwl import tool_proxy
+from galaxy.tool_util.cwl.parser import tool_proxy
 from galaxy.tool_util.deps import requirements
 from .interface import (
     PageSource,
@@ -28,6 +27,10 @@ class CwlToolSource(ToolSource):
         self._tool_proxy = None
         self._source_path = tool_file
         self._strict_cwl_validation = strict_cwl_validation
+
+    @property
+    def source_path(self):
+        return self._source_path
 
     @property
     def tool_proxy(self):
@@ -70,7 +73,7 @@ class CwlToolSource(ToolSource):
         return []
 
     def parse_help(self):
-        return self.tool_proxy.description() or ""
+        return self.tool_proxy.doc()
 
     def parse_sanitize(self):
         return False
@@ -100,20 +103,23 @@ class CwlToolSource(ToolSource):
     def parse_description(self):
         return self.tool_proxy.description()
 
+    def parse_interactivetool(self):
+        return []
+
     def parse_input_pages(self):
         page_source = CwlPageSource(self.tool_proxy)
         return PagesSource([page_source])
 
     def parse_outputs(self, tool):
         output_instances = self.tool_proxy.output_instances()
-        outputs = OrderedDict()
+        outputs = {}
         output_defs = []
         for output_instance in output_instances:
             output_defs.append(self._parse_output(tool, output_instance))
         # TODO: parse outputs collections
         for output_def in output_defs:
             outputs[output_def.name] = output_def
-        return outputs, OrderedDict()
+        return outputs, {}
 
     def _parse_output(self, tool, output_instance):
         name = output_instance.name
@@ -152,6 +158,9 @@ class CwlToolSource(ToolSource):
     def parse_profile(self):
         return "16.04"
 
+    def parse_license(self):
+        return None
+
     def parse_python_template_version(self):
         return '3.5'
 
@@ -160,7 +169,7 @@ class CwlPageSource(PageSource):
 
     def __init__(self, tool_proxy):
         cwl_instances = tool_proxy.input_instances()
-        self._input_list = map(self._to_input_source, cwl_instances)
+        self._input_list = list(map(self._to_input_source, cwl_instances))
 
     def _to_input_source(self, input_instance):
         as_dict = input_instance.to_dict()

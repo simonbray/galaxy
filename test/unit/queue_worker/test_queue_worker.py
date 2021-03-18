@@ -1,5 +1,10 @@
 import datetime
 import time
+try:
+    from math import inf
+except ImportError:
+    # python 2 doesn't have math.inf, but can use float('inf')
+    inf = float('inf')
 
 import pytest
 
@@ -37,7 +42,7 @@ def queue_worker_factory(request, database_app):
 def setup_queue_worker_test(app):
     app.some_var = 'foo'
     app.tasks_executed = []
-    server_name = "%s.%s" % (app.amqp_type, datetime.datetime.now())
+    server_name = f"{app.amqp_type}.{datetime.datetime.now()}"
     app.config.server_name = server_name
     app.config.server_names = [server_name]
     app.config.attach_to_pools = False
@@ -84,6 +89,14 @@ def test_send_local_control_task(queue_worker_factory):
     send_local_control_task(app=app, task='echo')
     wait_for_var(app, 'some_var', 'bar')
     assert len(app.tasks_executed) == 1
+
+
+def test_send_local_control_task_with_past_message(queue_worker_factory):
+    app = queue_worker_factory()
+    app.queue_worker.epoch = inf
+    response = send_local_control_task(app=app, task='echo', get_response=True)
+    assert len(app.tasks_executed) == 0
+    assert response == 'NO_OP'
 
 
 def test_send_local_control_task_with_non_target_listeners(queue_worker_factory):

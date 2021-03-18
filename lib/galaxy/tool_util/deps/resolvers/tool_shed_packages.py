@@ -17,7 +17,7 @@ class ToolShedPackageDependencyResolver(BaseGalaxyPackageDependencyResolver, Use
     resolves_simple_dependencies = False
 
     def __init__(self, dependency_manager, **kwds):
-        super(ToolShedPackageDependencyResolver, self).__init__(dependency_manager, **kwds)
+        super().__init__(dependency_manager, **kwds)
 
     def _find_dep_versioned(self, name, version, type='package', **kwds):
         installed_tool_dependency = self._get_installed_dependency(name, type, version=version, **kwds)
@@ -36,7 +36,7 @@ class ToolShedPackageDependencyResolver(BaseGalaxyPackageDependencyResolver, Use
                 has_script_dep = is_galaxy_dep and dependency.script and dependency.path
                 if has_script_dep:
                     # Environment settings do not use versions.
-                    return ToolShedDependency(dependency.script, dependency.path, name, 'set_environment', None, True)
+                    return ToolShedDependency(dependency.script, dependency.path, name, 'set_environment', None, True, dependency_resolver=self)
         return NullDependency(version=None, name=name)
 
     def _get_package_installed_dependency_path(self, installed_tool_dependency, name, version):
@@ -62,7 +62,7 @@ class ToolShedPackageDependencyResolver(BaseGalaxyPackageDependencyResolver, Use
                             tool_shed_repository.installed_changeset_revision))
         if exists(path):
             script = join(path, 'env.sh')
-            return ToolShedDependency(script, path, name, 'set_environment', None, True)
+            return ToolShedDependency(script, path, name, 'set_environment', None, True, dependency_resolver=self)
         return NullDependency(version=None, name=name)
 
 

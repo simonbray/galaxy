@@ -140,7 +140,7 @@ def test_tool_requirements():
     assert tool_requirements_ab == ToolRequirements([REQUIREMENT_B, REQUIREMENT_A])
     assert tool_requirements_ab == ToolRequirements([REQUIREMENT_B, REQUIREMENT_A, REQUIREMENT_A])
     assert tool_requirements_ab != tool_requirements_b
-    assert len(set([tool_requirements_ab, tool_requirements_ab_dup])) == 1
+    assert len({tool_requirements_ab, tool_requirements_ab_dup}) == 1
 
 
 def test_module_dependency_resolver():
@@ -456,7 +456,7 @@ def __assert_foo_exported(commands):
     command = ["bash", "-c", "%s; echo \"$FOO\"" % "".join(commands)]
     process = Popen(command, stdout=PIPE)
     output = process.communicate()[0].strip()
-    assert output == b'bar', "Command %s exports FOO as %s, not bar" % (command, output)
+    assert output == b'bar', f"Command {command} exports FOO as {output}, not bar"
 
 
 def __setup_galaxy_package_dep(base_path, name, version, contents=""):
@@ -750,7 +750,10 @@ def __dependency_manager_for_config(app_config, resolution_config=None):
     return dm
 
 
-class _SimpleDependencyManager(object):
+class _SimpleDependencyManager:
+    default_base_path = None
 
-    def get_resolver_option(self, resolver, key, explicit_resolver_options={}):
+    def get_resolver_option(self, resolver, key, explicit_resolver_options=None):
+        if explicit_resolver_options is None:
+            explicit_resolver_options = {}
         return explicit_resolver_options.get(key)

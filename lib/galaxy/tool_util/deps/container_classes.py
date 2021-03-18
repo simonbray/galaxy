@@ -7,7 +7,6 @@ from abc import (
 from logging import getLogger
 from uuid import uuid4
 
-import six
 
 from galaxy.containers.docker_model import DockerVolume
 from galaxy.util import (
@@ -56,10 +55,23 @@ if not found:
     subprocess.check_call(cmd, shell=True)
 EOF
 '''
+SOURCE_CONDA_ACTIVATE = """
+# Check if container was created by installing conda packages,
+# and if so, source scripts to populate environment variables
+# that would be set by activating the conda environment.
+if [ -d /usr/local/etc/conda/activate.d ]; then
+  export CONDA_PREFIX=/usr/local
+  for f in /usr/local/etc/conda/activate.d/*.sh; do
+    case "$f" in
+      "/usr/local/etc/conda/activate.d/activate-"*) :;;
+      *) . "$f" ;;
+    esac;
+  done
+fi
+"""
 
 
-@six.add_metaclass(ABCMeta)
-class Container(object):
+class Container(metaclass=ABCMeta):
 
     def __init__(self, container_id, app_info, tool_info, destination_info, job_info, container_description, container_name=None):
         self.container_id = container_id
@@ -72,7 +84,7 @@ class Container(object):
         self.container_info = {}
 
     def prop(self, name, default):
-        destination_name = "docker_%s" % name
+        destination_name = f"{self.container_type}_{name}"
         return self.destination_info.get(destination_name, default)
 
     @property
@@ -82,6 +94,12 @@ class Container(object):
     @property
     def shell(self):
         return DEFAULT_CONTAINER_SHELL if not self.container_description else self.container_description.shell
+
+    @property
+    def source_environment(self):
+        if self.container_description and not self.container_description.explicit:
+            return SOURCE_CONDA_ACTIVATE
+        return ""
 
     @abstractmethod
     def containerize_command(self, command):
@@ -103,10 +121,14 @@ def preprocess_volumes(volumes_raw_str, container_type):
     ['/a/b:rw']
     >>> preprocess_volumes("/a/b:ro,/a/b/c:rw", DOCKER_CONTAINER_TYPE)
     ['/a/b:ro', '/a/b/c:rw']
+    >>> preprocess_volumes("/a/b:/a:ro,/a/b/c:/a/b:rw", DOCKER_CONTAINER_TYPE)
+    ['/a/b:/a:ro', '/a/b/c:/a/b:rw']
     >>> preprocess_volumes("/a/b:default_ro,/a/b/c:rw", DOCKER_CONTAINER_TYPE)
     ['/a/b:ro', '/a/b/c:rw']
+    >>> preprocess_volumes("/a/b:default_ro,/a/b/c:ro", SINGULARITY_CONTAINER_TYPE)
+    ['/a/b:ro', '/a/b/c:ro']
     >>> preprocess_volumes("/a/b:default_ro,/a/b/c:rw", SINGULARITY_CONTAINER_TYPE)
-    ['/a/b:rw', '/a/b/c:rw']
+    ['/a/b', '/a/b/c']
     """
 
     volumes_raw_strs = [v.strip() for v in volumes_raw_str.split(",")]
@@ -115,8 +137,12 @@ def preprocess_volumes(volumes_raw_str, container_type):
 
     for volume_raw_str in volumes_raw_strs:
         volume_parts = volume_raw_str.split(":")
-        if len(volume_parts) > 2:
+        if len(volume_parts) > 3:
             raise Exception("Unparsable volumes string in configuration [%s]" % volumes_raw_str)
+        if len(volume_parts) == 3:
+            volume_parts = ["{}:{}".format(volume_parts[0], volume_parts[1]), volume_parts[2]]
+        if len(volume_parts) == 2 and volume_parts[1] not in ("rw", "ro", "default_ro"):
+            volume_parts = ["{}:{}".format(volume_parts[0], volume_parts[1]), "rw"]
         if len(volume_parts) == 1:
             volume_parts.append("rw")
         volumes.append(volume_parts)
@@ -136,10 +162,16 @@ def preprocess_volumes(volumes_raw_str, container_type):
 
         volume[1] = how
 
+        # for a while singularity did not allow to specify the bind type rw
+        # (which is the default). so we omit this default
+        # see https://github.com/hpcng/singularity/pull/5487
+        if container_type == SINGULARITY_CONTAINER_TYPE and volume[1] == 'rw':
+            del volume[1]
+
     return [":".join(v) for v in volumes]
 
 
-class HasDockerLikeVolumes(object):
+class HasDockerLikeVolumes:
     """Mixin to share functionality related to Docker volume handling.
 
     Singularity seems to have a fairly compatible syntax for volume handling.
@@ -162,10 +194,12 @@ class HasDockerLikeVolumes(object):
         add_var("tmp_directory", self.job_info.tmp_directory)
         add_var("job_directory", self.job_info.job_directory)
         add_var("tool_directory", self.job_info.tool_directory)
+        add_var("home_directory", self.job_info.home_directory)
         add_var("galaxy_root", self.app_info.galaxy_root_dir)
         add_var("default_file_path", self.app_info.default_file_path)
         add_var("library_import_dir", self.app_info.library_import_dir)
-
+        add_var('tool_data_path', self.app_info.tool_data_path)
+        add_var('shed_tool_data_path', self.app_info.shed_tool_data_path)
         if self.job_info.job_directory and self.job_info.job_directory_type == "pulsar":
             # We have a Pulsar job directory, so everything needed (excluding index
             # files) should be available in job_directory...
@@ -178,9 +212,13 @@ class HasDockerLikeVolumes(object):
             if self.job_info.tool_directory:
                 defaults += ",$tool_directory:default_ro"
             if self.job_info.job_directory:
-                defaults += ",$job_directory:default_ro"
+                defaults += ",$job_directory:default_ro,$job_directory/outputs:rw"
+                if self.tool_info.profile <= 19.09:
+                    defaults += ",$job_directory/configs:rw"
             if self.job_info.tmp_directory is not None:
                 defaults += ",$tmp_directory:rw"
+            if self.job_info.home_directory is not None:
+                defaults += ",$home_directory:rw"
             if self.app_info.outputs_to_working_directory:
                 # Should need default_file_path (which is of course an estimate given
                 # object stores anyway).
@@ -190,6 +228,10 @@ class HasDockerLikeVolumes(object):
 
         if self.app_info.library_import_dir:
             defaults += ",$library_import_dir:default_ro"
+        if self.app_info.tool_data_path:
+            defaults += ",$tool_data_path:default_ro"
+        if self.app_info.shed_tool_data_path:
+            defaults += ",$shed_tool_data_path:default_ro"
 
         # Define $defaults that can easily be extended with external library and
         # index data without deployer worrying about above details.
@@ -205,7 +247,6 @@ class HasDockerLikeVolumes(object):
             if end_index < 0:
                 end_index = len(volumes_str)
             volumes_str = volumes_str[0:tool_directory_index] + volumes_str[end_index:len(volumes_str)]
-
         return volumes_str
 
 
@@ -233,15 +274,15 @@ class DockerContainer(Container, HasDockerLikeVolumes):
     def containerize_command(self, command):
         env_directives = []
         for pass_through_var in self.tool_info.env_pass_through:
-            env_directives.append('"%s=$%s"' % (pass_through_var, pass_through_var))
+            env_directives.append(f'"{pass_through_var}=${pass_through_var}"')
 
         # Allow destinations to explicitly set environment variables just for
         # docker container. Better approach is to set for destination and then
         # pass through only what tool needs however. (See todo in ToolInfo.)
-        for key, value in six.iteritems(self.destination_info):
+        for key, value in self.destination_info.items():
             if key.startswith("docker_env_"):
                 env = key[len("docker_env_"):]
-                env_directives.append('"%s=%s"' % (env, value))
+                env_directives.append(f'"{env}={value}"')
 
         working_directory = self.job_info.working_directory
         if not working_directory:
@@ -256,8 +297,9 @@ class DockerContainer(Container, HasDockerLikeVolumes):
         # and Galaxy.
         if self.job_info.tmp_directory is not None:
             volumes.append(DockerVolume.from_str("%s:/tmp:rw" % self.job_info.tmp_directory))
+        else:
+            volumes.append(DockerVolume.from_str("$_GALAXY_JOB_TMP_DIR:$_GALAXY_JOB_TMP_DIR:rw"))
         volumes_from = self.destination_info.get("docker_volumes_from", docker_util.DEFAULT_VOLUMES_FROM)
-
         docker_host_props = self.docker_host_props
 
         cached_image_file = self.__get_cached_image_file()
@@ -289,11 +331,11 @@ class DockerContainer(Container, HasDockerLikeVolumes):
         # Standard error is:
         #    Error response from daemon: Cannot kill container: 2b0b961527574ebc873256b481bbe72e: No such container: 2b0b961527574ebc873256b481bbe72e
         return """
-_on_exit() {
-  %s &> /dev/null
-}
+_on_exit() {{
+  {} &> /dev/null
+}}
 trap _on_exit 0
-%s\n%s""" % (kill_command, cache_command, run_command)
+{}\n{}""".format(kill_command, cache_command, run_command)
 
     def __cache_from_file_command(self, cached_image_file, docker_host_props):
         images_cmd = docker_util.build_docker_images_command(truncate=False, **docker_host_props)
@@ -357,7 +399,7 @@ class SingularityContainer(Container, HasDockerLikeVolumes):
         # Allow destinations to explicitly set environment variables just for
         # docker container. Better approach is to set for destination and then
         # pass through only what tool needs however. (See todo in ToolInfo.)
-        for key, value in six.iteritems(self.destination_info):
+        for key, value in self.destination_info.items():
             if key.startswith("singularity_env_"):
                 real_key = key[len("singularity_env_"):]
                 env.append((real_key, value))
@@ -390,7 +432,7 @@ CONTAINER_CLASSES = dict(
 )
 
 
-class NullContainer(object):
+class NullContainer:
 
     def __init__(self):
         pass

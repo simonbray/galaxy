@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 """
 import datetime
@@ -6,7 +5,6 @@ import random
 import unittest
 
 from sqlalchemy import column, desc, false, true
-from sqlalchemy.sql import text
 
 from galaxy.managers import base, collections, hdas, history_contents
 from galaxy.managers.histories import HistoryManager
@@ -24,11 +22,12 @@ parsed_filter = base.ModelFilterParser.parsed_filter
 class HistoryAsContainerBaseTestCase(BaseTestCase, CreatesCollectionsMixin):
 
     def set_up_managers(self):
-        super(HistoryAsContainerBaseTestCase, self).set_up_managers()
-        self.history_manager = HistoryManager(self.app)
-        self.hda_manager = hdas.HDAManager(self.app)
-        self.collection_manager = collections.DatasetCollectionManager(self.app)
-        self.contents_manager = history_contents.HistoryContentsManager(self.app)
+        super().set_up_managers()
+        self.history_manager = self.app[HistoryManager]
+        self.hda_manager = self.app[hdas.HDAManager]
+        self.collection_manager = self.app[collections.DatasetCollectionManager]
+        self.contents_manager = self.app[history_contents.HistoryContentsManager]
+        self.history_contents_filters = self.app[history_contents.HistoryContentsFilters]
 
     def add_hda_to_history(self, history, **kwargs):
         dataset = self.hda_manager.dataset_manager.create()
@@ -120,6 +119,7 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         self.assertEqual(self.contents_manager.contents(history, offset=len(contents)), [])
 
     def test_orm_filtering(self):
+        parse_filter = self.history_contents_filters.parse_filter
         user2 = self.user_manager.create(**user2_data)
         history = self.history_manager.create(name='history', user=user2)
         contents = []
@@ -136,7 +136,7 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         self.app.model.context.flush()
 
         # TODO: cross db compat?
-        filters = [parsed_filter(filter_type="orm", filter=text('deleted = 1'))]
+        filters = [parse_filter('deleted', 'eq', 'True')]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), deleted)
 
         # even stranger that sqlalx can use the first model in the union (HDA) for columns across the union
@@ -154,7 +154,7 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         invisible = [contents[2], contents[5], contents[6]]
         self.app.model.context.flush()
 
-        filters = [parsed_filter("orm", text('visible = 0'))]
+        filters = [parse_filter('visible', 'eq', 'False')]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), invisible)
         self.assertEqual(self.contents_manager.contents(history,
             filters=[parsed_filter("orm", HDA.visible == false())]), invisible)
@@ -164,8 +164,10 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
 
         self.log("should allow filtering more than one attribute")
         deleted_and_invisible = [contents[6]]
-
-        filters = [parsed_filter("orm", text('deleted = 1')), parsed_filter("orm", text('visible = 0'))]
+        filters = [
+            parse_filter('deleted', 'eq', 'True'),
+            parse_filter('visible', 'eq', 'False')
+        ]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), deleted_and_invisible)
         self.assertEqual(self.contents_manager.contents(history,
             filters=[parsed_filter("orm", HDA.deleted == true()), parsed_filter("orm", HDA.visible == false())]), deleted_and_invisible)
@@ -176,8 +178,12 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         self.log("should allow filtering more than one attribute")
         deleted_and_invisible = [contents[6]]
         # note the two syntaxes both work
+        filters = [
+            parse_filter('deleted', 'eq', 'True'),
+            parse_filter('visible', 'eq', 'False')
+        ]
         self.assertEqual(self.contents_manager.contents(history,
-            filters=[parsed_filter("orm", text('deleted = 1')), parsed_filter("orm", text('visible = 0'))]), deleted_and_invisible)
+            filters=filters), deleted_and_invisible)
         self.assertEqual(self.contents_manager.contents(history,
             filters=[parsed_filter("orm", HDA.deleted == true()), parsed_filter("orm", HDA.visible == false())]), deleted_and_invisible)
         offset_too_far = self.contents_manager.contents(history,
@@ -250,6 +256,7 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         self.assertEqual(results, [contents[3]])
 
     def test_filtered_counting(self):
+        parse_filter = self.history_contents_filters.parse_filter
         user2 = self.user_manager.create(**user2_data)
         history = self.history_manager.create(name='history', user=user2)
         contents = []
@@ -271,10 +278,13 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
 
         HDA = self.hda_manager.model_class
         self.assertEqual(self.contents_manager.contents_count(history, filters=[parsed_filter("orm", HDA.deleted == true())]), 3)
-        filters = [parsed_filter("orm", text('visible = 0'))]
+        filters = [parse_filter('visible', 'eq', 'False')]
         self.assertEqual(self.contents_manager.contents_count(history, filters=filters), 3)
 
-        filters = [parsed_filter("orm", text('deleted = 1')), parsed_filter("orm", text('visible = 0'))]
+        filters = [
+            parse_filter('deleted', 'eq', 'True'),
+            parse_filter('visible', 'eq', 'False')
+        ]
         self.assertEqual(self.contents_manager.contents_count(history, filters=filters), 1)
 
     def test_type_id(self):
@@ -287,20 +297,20 @@ class HistoryAsContainerTestCase(HistoryAsContainerBaseTestCase):
         contents.append(self.add_list_collection_to_history(history, contents[4:6]))
 
         self.log("should be able to use eq and in with hybrid type_id")
-        filters = [parsed_filter("orm", column('type_id') == u'dataset-2')]
+        filters = [parsed_filter("orm", column('type_id') == 'dataset-2')]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), [contents[1]])
-        filters = [parsed_filter("orm", column('type_id').in_([u'dataset-1', u'dataset-3']))]
+        filters = [parsed_filter("orm", column('type_id').in_(['dataset-1', 'dataset-3']))]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), [contents[0], contents[2]])
-        filters = [parsed_filter("orm", column('type_id') == u'dataset_collection-1')]
+        filters = [parsed_filter("orm", column('type_id') == 'dataset_collection-1')]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), [contents[3]])
-        filters = [parsed_filter("orm", column('type_id').in_([u'dataset-2', u'dataset_collection-2']))]
+        filters = [parsed_filter("orm", column('type_id').in_(['dataset-2', 'dataset_collection-2']))]
         self.assertEqual(self.contents_manager.contents(history, filters=filters), [contents[1], contents[6]])
 
 
 class HistoryContentsFilterParserTestCase(HistoryAsContainerBaseTestCase):
 
     def set_up_managers(self):
-        super(HistoryContentsFilterParserTestCase, self).set_up_managers()
+        super().set_up_managers()
         self.filter_parser = history_contents.HistoryContentsFilters(self.app)
 
     def test_date_parser(self):

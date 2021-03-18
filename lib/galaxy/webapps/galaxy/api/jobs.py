@@ -5,54 +5,108 @@ API operations on a jobs.
 """
 
 import logging
+import typing
 
-from six import string_types
-from sqlalchemy import or_
+from sqlalchemy import (
+    and_,
+    or_,
+)
+from sqlalchemy.orm import aliased
 
-from galaxy import exceptions
-from galaxy import model
-from galaxy import util
-from galaxy.managers.jobs import JobManager, JobSearch
+from galaxy import (
+    exceptions,
+    model,
+    util,
+)
+from galaxy.managers import hdas
+from galaxy.managers.context import ProvidesHistoryContext, ProvidesUserContext
+from galaxy.managers.jobs import (
+    JobLock,
+    JobManager,
+    JobSearch,
+    summarize_destination_params,
+    summarize_job_metrics,
+    summarize_job_parameters,
+    view_show_job,
+)
+from galaxy.schema.fields import EncodedDatabaseIdField
 from galaxy.web import (
     expose_api,
     expose_api_anonymous,
+    require_admin,
 )
 from galaxy.webapps.base.controller import (
-    BaseAPIController,
     UsesVisualizationMixin
 )
-from galaxy.work.context import WorkRequestContext
+from galaxy.work.context import (
+    WorkRequestContext,
+)
+from . import (
+    BaseGalaxyAPIController,
+    depends,
+    DependsOnTrans,
+    Router,
+)
 
 log = logging.getLogger(__name__)
 
+router = Router(tags=["jobs"])
 
-class JobController(BaseAPIController, UsesVisualizationMixin):
 
-    def __init__(self, app):
-        super(JobController, self).__init__(app)
-        self.job_manager = JobManager(app)
-        self.job_search = JobSearch(app)
+@router.cbv
+class FastAPIJobs:
+    job_manager: JobManager = depends(JobManager)
+    job_search: JobSearch = depends(JobSearch)
+    hda_manager: hdas.HDAManager = depends(hdas.HDAManager)
+
+    @router.get("/api/job/{id}")
+    def show(self, id: EncodedDatabaseIdField, trans: ProvidesUserContext = DependsOnTrans, full: typing.Optional[bool] = False) -> typing.Dict:
+        """
+        Return dictionary containing description of job data
+
+        Parameters
+        - id: ID of job to return
+        - full: Return extra information ?
+        """
+        id = trans.app.security.decode_id(id)
+        job = self.job_manager.get_accessible_job(trans, id)
+        return view_show_job(trans, job, bool(full))
+
+
+class JobController(BaseGalaxyAPIController, UsesVisualizationMixin):
+    job_manager = depends(JobManager)
+    job_search = depends(JobSearch)
+    hda_manager = depends(hdas.HDAManager)
 
     @expose_api
-    def index(self, trans, **kwd):
+    def index(self, trans: ProvidesUserContext, limit=500, offset=0, **kwd):
         """
-        index( trans, state=None, tool_id=None, history_id=None, date_range_min=None, date_range_max=None, user_details=False )
-        * GET /api/jobs:
-            return jobs for current user
+        GET /api/jobs
 
-            !! if user is admin and user_details is True, then
-                return jobs for all galaxy users based on filtering - this is an extended service
+        return jobs for current user
+
+        if user is admin and user_details is True, then
+        return jobs for all galaxy users based on filtering - this is an extended service
 
         :type   state: string or list
         :param  state: limit listing of jobs to those that match one of the included states. If none, all are returned.
-        Valid Galaxy job states include:
-                'new', 'upload', 'waiting', 'queued', 'running', 'ok', 'error', 'paused', 'deleted', 'deleted_new'
 
         :type   tool_id: string or list
         :param  tool_id: limit listing of jobs to those that match one of the included tool_ids. If none, all are returned.
 
         :type   user_details: boolean
         :param  user_details: if true, and requestor is an admin, will return external job id and user email.
+
+        :type   user_id: str
+        :param  user_id: an encoded user id to restrict query to, must be own id if not admin user
+
+        :type   limit: int
+        :param  limit: Maximum number of jobs to return.
+
+        :type   offset: int
+        :param  offset: Return jobs starting from this specified position.
+                        For example, if ``limit`` is set to 100 and ``offset`` to 200,
+                        jobs 200-299 will be returned.
 
         :type   date_range_min: string '2014-01-01'
         :param  date_range_min: limit the listing of jobs to those updated on or after requested date
@@ -63,21 +117,38 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         :type   history_id: string
         :param  history_id: limit listing of jobs to those that match the history_id. If none, all are returned.
 
+        :type   workflow_id: string
+        :param  workflow_id: limit listing of jobs to those that match the workflow_id. If none, all are returned.
+
+        :type   invocation_id: string
+        :param  invocation_id: limit listing of jobs to those that match the invocation_id. If none, all are returned.
+
         :rtype:     list
         :returns:   list of dictionaries containing summary job information
         """
         state = kwd.get('state', None)
         is_admin = trans.user_is_admin
         user_details = kwd.get('user_details', False)
+        user_id = kwd.get('user_id', None)
 
-        if is_admin:
-            query = trans.sa_session.query(trans.app.model.Job)
+        if user_id:
+            decoded_user_id = self.decode_id(user_id)
         else:
-            query = trans.sa_session.query(trans.app.model.Job).filter(trans.app.model.Job.user == trans.user)
+            decoded_user_id = None
+        job_alias = aliased(model.Job)
+        if is_admin:
+            if decoded_user_id is not None:
+                query = trans.sa_session.query(job_alias).filter(job_alias.user_id == decoded_user_id)
+            else:
+                query = trans.sa_session.query(job_alias)
+        else:
+            if decoded_user_id is not None and decoded_user_id != trans.user.id:
+                raise exceptions.AdminRequiredException("Only admins can index the jobs of others")
+            query = trans.sa_session.query(job_alias).filter(job_alias.user_id == trans.user.id)
 
         def build_and_apply_filters(query, objects, filter_func):
             if objects is not None:
-                if isinstance(objects, string_types):
+                if isinstance(objects, str):
                     query = query.filter(filter_func(objects))
                 elif isinstance(objects, list):
                     t = []
@@ -86,28 +157,57 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
                     query = query.filter(or_(*t))
             return query
 
-        query = build_and_apply_filters(query, state, lambda s: trans.app.model.Job.state == s)
+        query = build_and_apply_filters(query, state, lambda s: job_alias.state == s)
 
-        query = build_and_apply_filters(query, kwd.get('tool_id', None), lambda t: trans.app.model.Job.tool_id == t)
-        query = build_and_apply_filters(query, kwd.get('tool_id_like', None), lambda t: trans.app.model.Job.tool_id.like(t))
+        query = build_and_apply_filters(query, kwd.get('tool_id', None), lambda t: job_alias.tool_id == t)
+        query = build_and_apply_filters(query, kwd.get('tool_id_like', None), lambda t: job_alias.tool_id.like(t))
 
-        query = build_and_apply_filters(query, kwd.get('date_range_min', None), lambda dmin: trans.app.model.Job.table.c.update_time >= dmin)
-        query = build_and_apply_filters(query, kwd.get('date_range_max', None), lambda dmax: trans.app.model.Job.table.c.update_time <= dmax)
+        query = build_and_apply_filters(query, kwd.get('date_range_min', None), lambda dmin: job_alias.table.c.update_time >= dmin)
+        query = build_and_apply_filters(query, kwd.get('date_range_max', None), lambda dmax: job_alias.table.c.update_time <= dmax)
 
         history_id = kwd.get('history_id', None)
+        workflow_id = kwd.get('workflow_id', None)
+        invocation_id = kwd.get('invocation_id', None)
         if history_id is not None:
-            try:
-                decoded_history_id = self.decode_id(history_id)
-                query = query.filter(trans.app.model.Job.history_id == decoded_history_id)
-            except Exception:
-                raise exceptions.ObjectAttributeInvalidException()
+            decoded_history_id = self.decode_id(history_id)
+            query = query.filter(job_alias.history_id == decoded_history_id)
+        if workflow_id or invocation_id:
+            invocation = aliased(model.WorkflowInvocation)
+            invocation_step = aliased(model.WorkflowInvocationStep)
+            if workflow_id is not None:
+                decoded_workflow_id = self.decode_id(workflow_id)
+                query = query.filter(
+                    invocation.id == invocation_step.workflow_invocation_id,
+                    invocation.workflow_id == model.Workflow.table.c.id,
+                    model.Workflow.table.c.stored_workflow_id == decoded_workflow_id,
+                )
+            elif invocation_id is not None:
+                decoded_invocation_id = self.decode_id(invocation_id)
+                query = query.filter(
+                    invocation.id == invocation_step.workflow_invocation_id,
+                    invocation_step.workflow_invocation_id == decoded_invocation_id
+                )
+            query = query.filter(
+                or_(
+                    job_alias.id == invocation_step.job_id,
+                    and_(
+                        job_alias.id == model.ImplicitCollectionJobsJobAssociation.table.c.job_id,
+                        model.ImplicitCollectionJobsJobAssociation.table.c.implicit_collection_jobs_id == invocation_step.implicit_collection_jobs_id,
+                    )
+                )
+            )
+
+        if kwd.get('order_by') == 'create_time':
+            order_by = job_alias.create_time.desc()
+        else:
+            order_by = job_alias.update_time.desc()
+        query = query.order_by(order_by)
+
+        query = query.offset(offset)
+        query = query.limit(limit)
 
         out = []
-        if kwd.get('order_by') == 'create_time':
-            order_by = trans.app.model.Job.create_time.desc()
-        else:
-            order_by = trans.app.model.Job.update_time.desc()
-        for job in query.order_by(order_by).all():
+        for job in query.all():
             job_dict = job.to_dict('collection', system_details=is_admin)
             j = self.encode_all_ids(trans, job_dict, True)
             if user_details:
@@ -117,7 +217,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return out
 
     @expose_api_anonymous
-    def show(self, trans, id, **kwd):
+    def show(self, trans: ProvidesUserContext, id, **kwd):
         """
         show( trans, id )
         * GET /api/jobs/{id}:
@@ -133,45 +233,11 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         :returns:   dictionary containing full description of job data
         """
         job = self.__get_job(trans, id)
-        is_admin = trans.user_is_admin
-        job_dict = self.encode_all_ids(trans, job.to_dict('element', system_details=is_admin), True)
         full_output = util.asbool(kwd.get('full', 'false'))
-        if full_output:
-
-            job_dict.update(dict(
-                tool_stdout=job.tool_stdout,
-                tool_stderr=job.tool_stderr,
-                job_stdout=job.job_stdout,
-                job_stderr=job.job_stderr,
-                stderr=job.stderr,
-                stdout=job.stdout,
-                job_messages=job.job_messages
-            ))
-
-            if is_admin:
-                if job.user:
-                    job_dict['user_email'] = job.user.email
-                else:
-                    job_dict['user_email'] = None
-
-                def metric_to_dict(metric):
-                    metric_name = metric.metric_name
-                    metric_value = metric.metric_value
-                    metric_plugin = metric.plugin
-                    title, value = trans.app.job_metrics.format(metric_plugin, metric_name, metric_value)
-                    return dict(
-                        title=title,
-                        value=value,
-                        plugin=metric_plugin,
-                        name=metric_name,
-                        raw_value=str(metric_value),
-                    )
-
-                job_dict['job_metrics'] = self._metrics_as_dict(trans, job)
-        return job_dict
+        return view_show_job(trans, job, full_output)
 
     @expose_api
-    def common_problems(self, trans, id, **kwd):
+    def common_problems(self, trans: ProvidesUserContext, id, **kwd):
         """
         * GET /api/jobs/{id}/common_problems
             check inputs and job for common potential problems to aid in error reporting
@@ -197,11 +263,11 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return {"has_empty_inputs": has_empty_inputs, "has_duplicate_inputs": has_duplicate_inputs}
 
     @expose_api
-    def inputs(self, trans, id, **kwd):
+    def inputs(self, trans: ProvidesUserContext, id, **kwd):
         """
-        show( trans, id )
-        * GET /api/jobs/{id}/inputs
-            returns input datasets created by job
+        GET /api/jobs/{id}/inputs
+
+        returns input datasets created by job
 
         :type   id: string
         :param  id: Encoded job id
@@ -213,7 +279,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return self.__dictify_associations(trans, job.input_datasets, job.input_library_datasets)
 
     @expose_api
-    def outputs(self, trans, id, **kwd):
+    def outputs(self, trans: ProvidesUserContext, id, **kwd):
         """
         outputs( trans, id )
         * GET /api/jobs/{id}/outputs
@@ -229,7 +295,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return self.__dictify_associations(trans, job.output_datasets, job.output_library_datasets)
 
     @expose_api
-    def delete(self, trans, id, **kwd):
+    def delete(self, trans: ProvidesUserContext, id, **kwd):
         """
         delete( trans, id )
         * Delete /api/jobs/{id}
@@ -237,18 +303,16 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
 
         :type   id: string
         :param  id: Encoded job id
+        :type   message: string
+        :param  message: Stop message.
         """
+        payload = kwd.get("payload") or {}
         job = self.__get_job(trans, id)
-        if not job.finished:
-            job.mark_deleted(self.app.config.track_jobs_in_database)
-            trans.sa_session.flush()
-            self.app.job_manager.stop(job)
-            return True
-        else:
-            return False
+        message = payload.get("message", None)
+        return self.job_manager.stop(job, message=message)
 
     @expose_api
-    def resume(self, trans, id, **kwd):
+    def resume(self, trans: ProvidesUserContext, id, **kwd):
         """
         * PUT /api/jobs/{id}/resume
             Resumes a paused job
@@ -269,7 +333,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return self.__dictify_associations(trans, job.output_datasets, job.output_library_datasets)
 
     @expose_api_anonymous
-    def metrics(self, trans, **kwd):
+    def metrics(self, trans: ProvidesUserContext, **kwd):
         """
         * GET /api/jobs/{job_id}/metrics
         * GET /api/datasets/{dataset_id}/metrics
@@ -290,31 +354,26 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         :returns:   list containing job metrics
         """
         job = self.__get_job(trans, **kwd)
-        if not trans.user_is_admin and not trans.app.config.expose_potentially_sensitive_job_metrics:
-            return []
+        return summarize_job_metrics(trans, job)
 
-        return self._metrics_as_dict(trans, job)
+    @require_admin
+    @expose_api
+    def destination_params(self, trans: ProvidesUserContext, **kwd):
+        """
+        * GET /api/jobs/{job_id}/destination_params
+            Return destination parameters for specified job.
 
-    def _metrics_as_dict(self, trans, job):
+        :type   job_id: string
+        :param  job_id: Encoded job id
 
-        def metric_to_dict(metric):
-            metric_name = metric.metric_name
-            metric_value = metric.metric_value
-            metric_plugin = metric.plugin
-            title, value = trans.app.job_metrics.format(metric_plugin, metric_name, metric_value)
-            return dict(
-                title=title,
-                value=value,
-                plugin=metric_plugin,
-                name=metric_name,
-                raw_value=str(metric_value),
-            )
-
-        metrics = [m for m in job.metrics if m.plugin != 'env' or trans.user_is_admin]
-        return list(map(metric_to_dict, metrics))
+        :rtype:     list
+        :returns:   list containing job destination parameters
+        """
+        job = self.__get_job(trans, **kwd)
+        return summarize_destination_params(trans, job)
 
     @expose_api_anonymous
-    def parameters_display(self, trans, **kwd):
+    def parameters_display(self, trans: ProvidesUserContext, **kwd):
         """
         * GET /api/jobs/{job_id}/parameters_display
         * GET /api/datasets/{dataset_id}/parameters_display
@@ -342,91 +401,10 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         :returns:   job parameters for for display
         """
         job = self.__get_job(trans, **kwd)
-
-        def inputs_recursive(input_params, param_values, depth=1, upgrade_messages=None):
-            if upgrade_messages is None:
-                upgrade_messages = {}
-
-            rval = []
-
-            for input_index, input in enumerate(input_params.values()):
-                if input.name in param_values:
-                    if input.type == "repeat":
-                        for i in range(len(param_values[input.name])):
-                            rval.extend(inputs_recursive(input.inputs, param_values[input.name][i], depth=depth + 1))
-                    elif input.type == "section":
-                        # Get the value of the current Section parameter
-                        rval.append(dict(text=input.name, depth=depth))
-                        rval.extend(inputs_recursive(input.inputs, param_values[input.name], depth=depth + 1, upgrade_messages=upgrade_messages.get(input.name)))
-                    elif input.type == "conditional":
-                        try:
-                            current_case = param_values[input.name]['__current_case__']
-                            is_valid = True
-                        except Exception:
-                            current_case = None
-                            is_valid = False
-                        if is_valid:
-                            rval.append(dict(text=input.test_param.label, depth=depth, value=input.cases[current_case].value))
-                            rval.extend(inputs_recursive(input.cases[current_case].inputs, param_values[input.name], depth=depth + 1, upgrade_messages=upgrade_messages.get(input.name)))
-                        else:
-                            rval.append(dict(text=input.name, depth=depth, notes="The previously used value is no longer valid.", error=True))
-                    elif input.type == "upload_dataset":
-                        rval.append(dict(text=input.group_title(param_values), depth=depth, value="%s uploaded datasets" % len(param_values[input.name])))
-                    elif input.type == "data":
-                        value = []
-                        for i, element in enumerate(util.listify(param_values[input.name])):
-                            if element.history_content_type == "dataset":
-                                hda = element
-                                encoded_id = trans.security.encode_id(hda.id)
-                                value.append({"src": "hda", "id": encoded_id, "hid": hda.hid, "name": hda.name})
-                            else:
-                                value.append({"hid": element.hid, "name": element.name})
-                        rval.append(dict(text=input.label, depth=depth, value=value))
-                    elif input.visible:
-                        if hasattr(input, "label") and input.label:
-                            label = input.label
-                        else:
-                            # value for label not required, fallback to input name (same as tool panel)
-                            label = input.name
-                        rval.append(dict(text=label, depth=depth, value=input.value_to_display_text(param_values[input.name]), notes=upgrade_messages.get(input.name, '')))
-                else:
-                    # Parameter does not have a stored value.
-                    # Get parameter label.
-                    if input.type == "conditional":
-                        label = input.test_param.label
-                    elif input.type == "repeat":
-                        label = input.label()
-                    else:
-                        label = input.label or input.name
-                    rval.append(dict(text=label, depth=depth, notes="not used (parameter was added after this job was run)"))
-
-            return rval
-
-        # Load the tool
-        toolbox = self.app.toolbox
-        tool = toolbox.get_tool(job.tool_id, job.tool_version)
-        assert tool is not None, 'Requested tool has not been loaded.'
-
-        params_objects = None
-        upgrade_messages = {}
-        has_parameter_errors = False
-
-        # Load parameter objects, if a parameter type has changed, it's possible for the value to no longer be valid
-        try:
-            params_objects = job.get_param_values(self.app, ignore_errors=False)
-        except Exception:
-            params_objects = job.get_param_values(self.app, ignore_errors=True)
-            # use different param_objects in the following line, since we want to display original values as much as possible
-            upgrade_messages = tool.check_and_update_param_values(job.get_param_values(self.app, ignore_errors=True),
-                                                                  trans,
-                                                                  update_values=False)
-            has_parameter_errors = True
-
-        parameters = inputs_recursive(tool.inputs, params_objects, depth=1, upgrade_messages=upgrade_messages)
-        return {"parameters": parameters, "has_parameter_errors": has_parameter_errors}
+        return summarize_job_parameters(trans, job)
 
     @expose_api_anonymous
-    def build_for_rerun(self, trans, id, **kwd):
+    def build_for_rerun(self, trans: ProvidesHistoryContext, id, **kwd):
         """
         * GET /api/jobs/{id}/build_for_rerun
             returns a tool input/param template prepopulated with this job's
@@ -468,10 +446,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
 
     def __get_job(self, trans, job_id=None, dataset_id=None, **kwd):
         if job_id is not None:
-            try:
-                decoded_job_id = self.decode_id(job_id)
-            except Exception:
-                raise exceptions.MalformedId()
+            decoded_job_id = self.decode_id(job_id)
             return self.job_manager.get_accessible_job(trans, decoded_job_id)
         else:
             hda_ldda = kwd.get("hda_ldda", "hda")
@@ -480,12 +455,12 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
             return dataset_instance.creating_job
 
     @expose_api
-    def create(self, trans, payload, **kwd):
+    def create(self, trans: ProvidesUserContext, payload, **kwd):
         """ See the create method in tools.py in order to submit a job. """
         raise exceptions.NotImplemented('Please POST to /api/tools instead.')
 
     @expose_api
-    def search(self, trans, payload, **kwd):
+    def search(self, trans: ProvidesHistoryContext, payload: dict, **kwd):
         """
         search( trans, payload )
         * POST /api/jobs/search:
@@ -504,12 +479,12 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         """
         tool_id = payload.get('tool_id')
         if tool_id is None:
-            raise exceptions.ObjectAttributeMissingException("No tool id")
+            raise exceptions.RequestParameterMissingException("No tool id")
         tool = trans.app.toolbox.get_tool(tool_id)
         if tool is None:
             raise exceptions.ObjectNotFound("Requested tool not found")
         if 'inputs' not in payload:
-            raise exceptions.ObjectAttributeMissingException("No inputs defined")
+            raise exceptions.RequestParameterMissingException("No inputs defined")
         inputs = payload.get('inputs', {})
         # Find files coming in as multipart file data and add to inputs.
         for k, v in payload.items():
@@ -533,7 +508,7 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         return [self.encode_all_ids(trans, single_job.to_dict('element'), True) for single_job in jobs]
 
     @expose_api_anonymous
-    def error(self, trans, id, **kwd):
+    def error(self, trans: ProvidesUserContext, id, payload, **kwd):
         """
         error( trans, id )
         * POST /api/jobs/{id}/error
@@ -546,16 +521,18 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
         :returns:   dictionary containing information regarding where the error report was sent.
         """
         # Get dataset on which this error was triggered
-        try:
-            decoded_dataset_id = self.decode_id(kwd['dataset_id'])
-        except Exception:
-            raise exceptions.MalformedId()
-        dataset = trans.sa_session.query(trans.app.model.HistoryDatasetAssociation).get(decoded_dataset_id)
+        dataset_id = payload.get('dataset_id')
+        if not dataset_id:
+            raise exceptions.RequestParameterMissingException('No dataset_id')
+        decoded_dataset_id = self.decode_id(dataset_id)
+        dataset = self.hda_manager.get_accessible(decoded_dataset_id, trans.user)
 
         # Get job
         job = self.__get_job(trans, id)
+        if dataset.creating_job.id != job.id:
+            raise exceptions.RequestParameterInvalidException('dataset_id was not created by job_id')
         tool = trans.app.toolbox.get_tool(job.tool_id, tool_version=job.tool_version) or None
-        email = kwd.get('email')
+        email = payload.get('email')
         if not email and not trans.anonymous:
             email = trans.user.email
         messages = trans.app.error_reports.default_error_plugin.submit_report(
@@ -565,7 +542,27 @@ class JobController(BaseAPIController, UsesVisualizationMixin):
             user_submission=True,
             user=trans.user,
             email=email,
-            message=kwd.get('message')
+            message=payload.get('message')
         )
 
         return {'messages': messages}
+
+    @require_admin
+    @expose_api
+    def show_job_lock(self, trans: ProvidesUserContext, **kwd):
+        """
+        * GET /api/job_lock
+            return boolean indicating if job lock active.
+        """
+        return self.job_manager.job_lock()
+
+    @require_admin
+    @expose_api
+    def update_job_lock(self, trans: ProvidesUserContext, payload, **kwd):
+        """
+        * PUT /api/job_lock
+            return boolean indicating if job lock active.
+        """
+        active = payload.get("active")
+        job_lock = JobLock(active=active)
+        return self.job_manager.update_job_lock(job_lock)

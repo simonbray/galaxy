@@ -4,23 +4,19 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
 
 import packaging.version
-import six
-from six.moves import shlex_quote
 
-from galaxy.tool_util.deps.commands import CommandLineException
 from galaxy.util import (
+    commands,
     smart_str,
     unicodify
 )
-from . import (
-    commands,
-    installable
-)
+from . import installable
 
 log = logging.getLogger(__name__)
 
@@ -59,11 +55,17 @@ def find_conda_prefix(conda_prefix=None):
         home = os.path.expanduser("~")
         miniconda_2_dest = os.path.join(home, "miniconda2")
         miniconda_3_dest = os.path.join(home, "miniconda3")
+        anaconda_2_dest = os.path.join(home, "anaconda2")
+        anaconda_3_dest = os.path.join(home, "anaconda3")
         # Prefer miniconda3 install if both available
         if os.path.exists(miniconda_3_dest):
             return miniconda_3_dest
         elif os.path.exists(miniconda_2_dest):
             return miniconda_2_dest
+        elif os.path.exists(anaconda_3_dest):
+            return anaconda_3_dest
+        elif os.path.exists(anaconda_2_dest):
+            return anaconda_2_dest
         else:
             return miniconda_3_dest
     return conda_prefix
@@ -217,14 +219,14 @@ class CondaContext(installable.InstallableContext):
         Return the process exit code (i.e. 0 in case of success).
         """
         cmd = [self.conda_exec]
+        cmd.extend(operation.split())
         if self.debug:
             cmd.append("--debug")
-        cmd.append(operation)
         cmd.extend(args)
         env = {}
         if self.condarc_override:
             env["CONDARC"] = self.condarc_override
-        cmd_string = ' '.join(map(shlex_quote, cmd))
+        cmd_string = ' '.join(map(shlex.quote, cmd))
         kwds = dict()
         try:
             if stdout_path:
@@ -246,15 +248,15 @@ class CondaContext(installable.InstallableContext):
         """
         Return the process exit code (i.e. 0 in case of success).
         """
-        create_base_args = [
+        create_args = [
             "-y",
             "--quiet"
         ]
         if allow_local and self.use_local:
-            create_base_args.extend(["--use-local"])
-        create_base_args.extend(self._override_channels_args)
-        create_base_args.extend(args)
-        return self.exec_command("create", create_base_args, stdout_path=stdout_path)
+            create_args.extend(["--use-local"])
+        create_args.extend(self._override_channels_args)
+        create_args.extend(args)
+        return self.exec_command("create", create_args, stdout_path=stdout_path)
 
     def exec_remove(self, args):
         """
@@ -262,38 +264,38 @@ class CondaContext(installable.InstallableContext):
 
         Return the process exit code (i.e. 0 in case of success).
         """
-        remove_base_args = [
-            "remove",
+        remove_args = [
             "-y",
             "--name"
         ]
-        remove_base_args.extend(args)
-        return self.exec_command("env", remove_base_args)
+        remove_args.extend(args)
+        return self.exec_command("env remove", remove_args)
 
     def exec_install(self, args, allow_local=True, stdout_path=None):
         """
         Return the process exit code (i.e. 0 in case of success).
         """
-        install_base_args = [
+        install_args = [
             "-y"
         ]
         if allow_local and self.use_local:
-            install_base_args.append("--use-local")
-        install_base_args.extend(self._override_channels_args)
-        install_base_args.extend(args)
-        return self.exec_command("install", install_base_args, stdout_path=stdout_path)
+            install_args.append("--use-local")
+        install_args.extend(self._override_channels_args)
+        install_args.extend(args)
+        return self.exec_command("install", install_args, stdout_path=stdout_path)
 
-    def exec_clean(self, args=[], quiet=False):
+    def exec_clean(self, args=None, quiet=False):
         """
         Clean up after conda installation.
 
         Return the process exit code (i.e. 0 in case of success).
         """
-        clean_base_args = [
+        clean_args = [
             "--tarballs",
             "-y"
         ]
-        clean_args = clean_base_args + args
+        if args:
+            clean_args.extend(args)
         stdout_path = None
         if quiet:
             stdout_path = "/dev/null"
@@ -354,8 +356,7 @@ def installed_conda_targets(conda_context):
             yield CondaTarget(unversioned_match.group(1))
 
 
-@six.python_2_unicode_compatible
-class CondaTarget(object):
+class CondaTarget:
 
     def __init__(self, package, version=None, channel=None):
         if SHELL_UNSAFE_PATTERN.search(package) is not None:
@@ -371,7 +372,7 @@ class CondaTarget(object):
     def __str__(self):
         attributes = "package=%s" % self.package
         if self.version is not None:
-            attributes = "%s,version=%s" % (self.package, self.version)
+            attributes = f"{self.package},version={self.version}"
         else:
             attributes = "%s,unversioned" % self.package
 
@@ -387,7 +388,7 @@ class CondaTarget(object):
         """ Return a package specifier as consumed by conda install/create.
         """
         if self.version:
-            return "%s=%s" % (self.package, self.version)
+            return f"{self.package}={self.version}"
         else:
             return self.package
 
@@ -398,7 +399,7 @@ class CondaTarget(object):
         a fixed and predictable name given package and version.
         """
         if self.version:
-            return "__%s@%s" % (self.package, self.version)
+            return f"__{self.package}@{self.version}"
         else:
             return "__%s@_uv_" % (self.package)
 
@@ -427,9 +428,9 @@ def hash_conda_packages(conda_packages, conda_target=None):
 # shell makes sense for planemo, in Galaxy this should just execute
 # these commands as Python
 def install_conda(conda_context, force_conda_build=False):
-    f, script_path = tempfile.mkstemp(suffix=".sh", prefix="conda_install")
-    os.close(f)
-    download_cmd = commands.download_command(conda_link(), to=script_path, quote_url=False)
+    with tempfile.NamedTemporaryFile(suffix=".sh", prefix="conda_install", delete=False) as temp:
+        script_path = temp.name
+    download_cmd = commands.download_command(conda_link(), to=script_path)
     install_cmd = ['bash', script_path, '-b', '-p', conda_context.conda_prefix]
     package_targets = [
         "conda=%s" % CONDA_VERSION,
@@ -493,14 +494,23 @@ def cleanup_failed_install(conda_target, conda_context=None):
     cleanup_failed_install_of_environment(conda_target.install_environment, conda_context=conda_context)
 
 
-def best_search_result(conda_target, conda_context, channels_override=None, offline=False):
+def best_search_result(conda_target, conda_context, channels_override=None, offline=False, platform=None):
     """Find best "conda search" result for specified target.
 
     Return ``None`` if no results match.
     """
-    search_cmd = [conda_context.conda_exec, "search", "--full-name", "--json"]
+    search_cmd = []
+    conda_exec = conda_context.conda_exec
+    if isinstance(conda_exec, list):
+        # for CondaInDockerContext
+        search_cmd.extend(conda_exec)
+    else:
+        search_cmd.append(conda_exec)
+    search_cmd.extend(["search", "--full-name", "--json"])
     if offline:
         search_cmd.append("--offline")
+    if platform:
+        search_cmd.extend(['--platform', platform])
     if channels_override:
         search_cmd.append("--override-channels")
         for channel in channels_override:
@@ -511,9 +521,14 @@ def best_search_result(conda_target, conda_context, channels_override=None, offl
     try:
         res = commands.execute(search_cmd)
         res = unicodify(res)
-        hits = json.loads(res).get(conda_target.package, [])
+        # Use python's stable list sorting to sort by date,
+        # then build_number, then version. The top of the list
+        # then is the newest version with the newest build and
+        # the latest update time.
+        hits = json.loads(res).get(conda_target.package, [])[::-1]
+        hits = sorted(hits, key=lambda hit: hit['build_number'], reverse=True)
         hits = sorted(hits, key=lambda hit: packaging.version.parse(hit['version']), reverse=True)
-    except CommandLineException:
+    except commands.CommandLineException:
         log.error("Could not execute: '%s'", search_cmd)
         hits = []
 

@@ -7,15 +7,13 @@ from abc import (
     abstractmethod
 )
 
-import six
-
 
 def dataset_path_rewrites(dataset_paths):
     dataset_paths_with_rewrites = [path for path in dataset_paths if getattr(path, "false_path", None)]
-    return dict((dp.real_path, dp) for dp in dataset_paths_with_rewrites)
+    return {dp.real_path: dp for dp in dataset_paths_with_rewrites}
 
 
-class DatasetPath(object):
+class DatasetPath:
 
     def __init__(
         self,
@@ -23,12 +21,18 @@ class DatasetPath(object):
         real_path,
         false_path=None,
         false_extra_files_path=None,
-        mutable=True
+        false_metadata_path=None,
+        mutable=True,
+        dataset_uuid=None,
+        object_store_id=None,
     ):
         self.dataset_id = dataset_id
+        self.dataset_uuid = dataset_uuid
+        self.object_store_id = object_store_id
         self.real_path = real_path
         self.false_path = false_path
         self.false_extra_files_path = false_extra_files_path
+        self.false_metadata_path = false_metadata_path
         self.mutable = mutable
 
     def __str__(self):
@@ -37,7 +41,7 @@ class DatasetPath(object):
         else:
             return self.false_path
 
-    def with_path_for_job(self, false_path, false_extra_files_path=None):
+    def with_path_for_job(self, false_path, false_extra_files_path=None, false_metadata_path=None):
         """
         Clone the dataset path but with a new false_path.
         """
@@ -48,13 +52,13 @@ class DatasetPath(object):
                 real_path=self.real_path,
                 false_path=false_path,
                 false_extra_files_path=false_extra_files_path,
+                false_metadata_path=false_metadata_path,
                 mutable=self.mutable,
             )
         return dataset_path
 
 
-@six.add_metaclass(ABCMeta)
-class DatasetPathRewriter(object):
+class DatasetPathRewriter(metaclass=ABCMeta):
     """ Used by runner to rewrite paths. """
 
     @abstractmethod
@@ -65,7 +69,7 @@ class DatasetPathRewriter(object):
         """
 
 
-class NullDatasetPathRewriter(object):
+class NullDatasetPathRewriter:
     """ Used by default for jobwrapper, do not rewrite anything.
     """
 
@@ -75,27 +79,32 @@ class NullDatasetPathRewriter(object):
         return None
 
 
-class OutputsToWorkingDirectoryPathRewriter(object):
+class OutputsToWorkingDirectoryPathRewriter:
     """ Rewrites all paths to place them in the specified working
     directory for normal jobs when Galaxy is configured with
     app.config.outputs_to_working_directory. Job runner base class
     is responsible for copying these out after job is complete.
     """
 
-    def __init__(self, working_directory):
+    def __init__(self, working_directory, outputs_directory_name):
         self.working_directory = working_directory
+        self.outputs_directory_name = outputs_directory_name
 
     def rewrite_dataset_path(self, dataset, dataset_type):
         """ Keep path the same.
         """
         if dataset_type == 'output':
-            false_path = os.path.abspath(os.path.join(self.working_directory, "galaxy_dataset_%d.dat" % dataset.id))
+            base_output_directory = os.path.abspath(self.working_directory)
+            if self.outputs_directory_name is not None:
+                base_output_directory = os.path.join(base_output_directory, self.outputs_directory_name)
+            # set false_path to uuid, no harm even if object store uses id
+            false_path = os.path.join(base_output_directory, "galaxy_dataset_%s.dat" % dataset.dataset.uuid)
             return false_path
         else:
             return None
 
 
-class TaskPathRewriter(object):
+class TaskPathRewriter:
     """ Rewrites all paths to place them in the specified working
     directory for TaskWrapper. TaskWrapper is responsible for putting
     them there and pulling them out.

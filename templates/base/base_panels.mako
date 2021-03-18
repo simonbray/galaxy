@@ -23,6 +23,8 @@
     <!--- base/base_panels.mako stylesheets() -->
     ${h.css(
         'bootstrap-tour',
+    )}
+    ${h.dist_css(
         'base'
     )}
 </%def>
@@ -31,16 +33,11 @@
 ## TODO: remove when all libs are required directly in modules
 <%def name="javascripts()">
     <!--- base/base_panels.mako javascripts() -->
-    ${h.js(
-        'bundled/libs.chunk',
-        'bundled/base.chunk'
+    ${h.dist_js(
+        'libs.chunk',
+        'base.chunk',
+        'generic.bundled'
     )}
-    ${ javascript_entry() }
-</%def>
-
-<%def name="javascript_entry()">
-    <!-- base/base_panels.mako javascript_entry -->
-    ${ h.js('bundled/generic.bundled')}
 </%def>
 
 <%def name="javascript_app()">
@@ -177,13 +174,13 @@
             </div>
             
             %if self.message_box_visible:
-                <div id="messagebox" class="panel-${app.config.message_box_class}-message" style="display:block">
+                <div id="messagebox" class="alert alert-${app.config.message_box_class} rounded-0 m-0 p-2">
                     ${app.config.message_box_content}
                 </div>
             %endif
             
             %if self.show_inactivity_warning:
-                <div id="inactivebox" class="panel-warning-message">
+                <div id="inactivebox" class="alert alert-warning rounded-0 m-0 p-2">
                     ${app.config.inactivity_box_content} <a href="${h.url_for( controller='user', action='resend_verification' )}">Resend verification.</a>
                 </div>
             %endif

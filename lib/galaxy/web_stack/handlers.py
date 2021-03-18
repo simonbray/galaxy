@@ -3,12 +3,12 @@
 A 'handler' is a named Python process running the Galaxy application responsible
 for some activity such as queuing up jobs or scheduling workflows.
 """
-from __future__ import absolute_import
 
 import logging
 import os
 import random
-from collections import namedtuple
+from enum import Enum
+from typing import Set, Tuple
 
 from sqlalchemy.orm import object_session
 
@@ -20,24 +20,29 @@ from galaxy.util import (
 
 log = logging.getLogger(__name__)
 
-_handler_assignment_methods = (
-    'MEM_SELF', 'DB_SELF', 'DB_PREASSIGN', 'DB_TRANSACTION_ISOLATION', 'DB_SKIP_LOCKED', 'UWSGI_MULE_MESSAGE'
-)
-HANDLER_ASSIGNMENT_METHODS = namedtuple('JOB_HANDLER_ASSIGNMENT_METHODS', _handler_assignment_methods)(
-    *[x.lower().replace('_', '-') for x in _handler_assignment_methods]
-)
+
+class HANDLER_ASSIGNMENT_METHODS(str, Enum):
+    MEM_SELF = 'mem-self'
+    DB_SELF = 'db-self'
+    DB_PREASSIGN = 'db-preassign'
+    DB_TRANSACTION_ISOLATION = 'db-transaction-isolation'
+    DB_SKIP_LOCKED = 'db-skip-locked'
+    UWSGI_MULE_MESSAGE = 'uwsgi-mule-message'
+
+    @classmethod
+    def has_value(cls, value):
+        return value in cls._value2member_map_
 
 
 class HandlerAssignmentSkip(Exception):
     """Exception for handler assignment methods to raise if the next method should be tried.
     """
-    pass
 
 
-class ConfiguresHandlers(object):
+class ConfiguresHandlers:
     DEFAULT_HANDLER_TAG = '_default_'
-    DEFAULT_BASE_HANDLER_POOLS = ()
-    UNSUPPORTED_HANDLER_ASSIGNMENT_METHODS = ()
+    DEFAULT_BASE_HANDLER_POOLS: Tuple[str, ...] = ()
+    UNSUPPORTED_HANDLER_ASSIGNMENT_METHODS: Set[str] = set()
 
     def add_handler(self, handler_id, tags):
         if handler_id not in self.handlers:
@@ -81,6 +86,9 @@ class ConfiguresHandlers(object):
             max_grab_str = config_element.attrib.get('max_grab', None)
             if max_grab_str:
                 handling_config_dict["max_grab"] = int(max_grab_str)
+            ready_window_size_str = config_element.attrib.get("ready_window_size", None)
+            if ready_window_size_str:
+                handling_config_dict["ready_window_size"] = int(ready_window_size_str)
 
         return handling_config_dict
 
@@ -114,9 +122,9 @@ class ConfiguresHandlers(object):
         if handling_config_dict:
             for method in handling_config_dict.get("assign", []):
                 method = method.lower()
-                assert method in HANDLER_ASSIGNMENT_METHODS, \
-                    "Invalid job handler assignment method '%s', must be one of: %s" % (
-                        method, ', '.join(HANDLER_ASSIGNMENT_METHODS))
+                assert HANDLER_ASSIGNMENT_METHODS.has_value(method), \
+                    "Invalid job handler assignment method '{}', must be one of: {}".format(
+                        method, ', '.join([h.value for h in HANDLER_ASSIGNMENT_METHODS]))
                 try:
                     self.handler_assignment_methods.append(method)
                 except AttributeError:
@@ -171,7 +179,7 @@ class ConfiguresHandlers(object):
         default and only one child.
 
         :param parent: Object representing a tag that may or may not have a 'default' attribute.
-        :type parent: ``xml.etree.ElementTree.Element``
+        :type parent: ``lxml.etree._Element``
         :param names: The list of destination or handler IDs or tags that were loaded.
         :type names: list of str
         :param auto: Automatically set a default if there is no default in the parent tag and there is only one child.
@@ -199,16 +207,16 @@ class ConfiguresHandlers(object):
 
     @staticmethod
     def _findall_with_required(parent, match, attribs=None):
-        """Like ``xml.etree.ElementTree.Element.findall()``, except only returns children that have the specified attribs.
+        """Like ``lxml.etree.Element.findall()``, except only returns children that have the specified attribs.
 
         :param parent: Parent element in which to find.
-        :type parent: ``xml.etree.ElementTree.Element``
+        :type parent: ``lxml.etree._Element``
         :param match: Name of child elements to find.
         :type match: str
         :param attribs: List of required attributes in children elements.
         :type attribs: list of str
 
-        :returns: list of ``xml.etree.ElementTree.Element``
+        :returns: list of ``lxml.etree._Element``
         """
         rval = []
         if attribs is None:
@@ -216,7 +224,7 @@ class ConfiguresHandlers(object):
         for elem in parent.findall(match):
             for attrib in attribs:
                 if attrib not in elem.attrib:
-                    log.warning("required '%s' attribute is missing from <%s> element" % (attrib, match))
+                    log.warning(f"required '{attrib}' attribute is missing from <{match}> element")
                     break
             else:
                 rval.append(elem)
@@ -268,7 +276,7 @@ class ConfiguresHandlers(object):
 
     @property
     def handler_tags(self):
-        """Get an iteratable of all configured handler tags.
+        """Get an iterable of all configured handler tags.
         """
         return filter(lambda k: isinstance(self.handlers[k], list), self.handlers.keys())
 
@@ -280,7 +288,7 @@ class ConfiguresHandlers(object):
 
     # If these get to be any more complex we should probably modularize them, or at least move to a separate class
 
-    def _assign_handler_direct(self, obj, configured):
+    def _assign_handler_direct(self, obj, configured, flush=True):
         """Directly assign a handler if the object has been preconfigured to a known single static handler.
 
         :param obj:             Same as :method:`ConfiguresHandlers.assign_handler()`.
@@ -295,11 +303,12 @@ class ConfiguresHandlers(object):
                 handlers = None
             if handlers == (configured,):
                 obj.set_handler(configured)
-                _timed_flush_obj(obj)
+                if flush:
+                    _timed_flush_obj(obj)
                 return configured
         return False
 
-    def _assign_mem_self_handler(self, obj, method, configured, queue_callback=None, **kwargs):
+    def _assign_mem_self_handler(self, obj, method, configured, queue_callback=None, flush=True, **kwargs):
         """Assign object to this handler using this process's in-memory queue.
 
         This method ignores all handler configuration.
@@ -319,11 +328,12 @@ class ConfiguresHandlers(object):
             log.warning("(%s) Ignoring handler assignment to '%s' because configured handler assignment method"
                         " '' overrides per-tool handler assignment", obj.log_str(),
                         HANDLER_ASSIGNMENT_METHODS.MEM_SELF, configured)
-        _timed_flush_obj(obj)
+        if flush():
+            _timed_flush_obj(obj)
         queue_callback()
         return self.app.config.server_name
 
-    def _assign_db_self_handler(self, obj, method, configured, **kwargs):
+    def _assign_db_self_handler(self, obj, method, configured, flush=True, **kwargs):
         """Assign object to this process by setting its ``handler`` column in the database to this process.
 
         This only occurs if there is not an explicitly configured handler assignment for the object. Otherwise, it is
@@ -340,10 +350,11 @@ class ConfiguresHandlers(object):
                 obj, method, configured, **kwargs
             )
         obj.set_handler(self.app.config.server_name)
-        _timed_flush_obj(obj)
+        if flush:
+            _timed_flush_obj(obj)
         return self.app.config.server_name
 
-    def _assign_db_preassign_handler(self, obj, method, configured, index=None, **kwargs):
+    def _assign_db_preassign_handler(self, obj, method, configured, index=None, flush=True, **kwargs):
         """Assign object to a handler by setting its ``handler`` column in the database to a handler selected at random
         from the known handlers in the appropriate tag.
 
@@ -372,10 +383,11 @@ class ConfiguresHandlers(object):
             log.debug("(%s) Selected handler '%s' by random choice from handler tag '%s'", obj.log_str(),
                       handler_id, handler)
         obj.set_handler(handler_id)
-        _timed_flush_obj(obj)
+        if flush:
+            _timed_flush_obj(obj)
         return handler_id
 
-    def _assign_db_tag(self, obj, method, configured, **kwargs):
+    def _assign_db_tag(self, obj, method, configured, flush=True, **kwargs):
         """Assign object to a handler by setting its ``handler`` column in the database to either the configured handler
         ID or tag, or to the default tag (or ``_default_``)
 
@@ -389,10 +401,11 @@ class ConfiguresHandlers(object):
         if handler is None:
             handler = self.default_handler_id or self.DEFAULT_HANDLER_TAG
         obj.set_handler(handler)
-        _timed_flush_obj(obj)
+        if flush:
+            _timed_flush_obj(obj)
         return handler
 
-    def _assign_uwsgi_mule_message_handler(self, obj, method, configured, message_callback=None, **kwargs):
+    def _assign_uwsgi_mule_message_handler(self, obj, method, configured, message_callback=None, flush=True, **kwargs):
         """Assign object to a handler by sending a setup message to the appropriate handler pool (farm), where a handler
         (mule) will receive the message and assign itself.
 
@@ -415,7 +428,8 @@ class ConfiguresHandlers(object):
             log.debug("(%s) No handler pool (uWSGI farm) for '%s' found", obj.log_str(), tag)
             raise HandlerAssignmentSkip()
         else:
-            _timed_flush_obj(obj)
+            if flush or not obj.id:
+                _timed_flush_obj(obj)
             message = message_callback()
             self.app.application_stack.send_message(pool, message)
         return pool
@@ -423,7 +437,7 @@ class ConfiguresHandlers(object):
     def assign_handler(self, obj, configured=None, **kwargs):
         """Set a job handler, flush obj
 
-        Called assignment methods should raise :exception:`HandlerAssignmentSkip` to indicate that the next method
+        Called assignment methods should raise py:class:`HandlerAssignmentSkip` to indicate that the next method
         should be tried.
 
         :param obj:         Object to assign a handler to (must be a model object with ``handler`` attribute and
@@ -438,8 +452,8 @@ class ConfiguresHandlers(object):
         # that's currently the best place for it. It's worth noting that this method is also part of the
         # WorkflowSchedulingManager, which acts like a combined JobConfiguration and JobManager. Combining those two
         # classes would probably be reasonable (and would remove the need for the queue callback).
-        if self._assign_handler_direct(obj, configured):
-            log.info("(%s) Skipped handler assignment logic due to explicit configuration to a single handler: %s",
+        if self._assign_handler_direct(obj, configured, flush=kwargs.get('flush', True)):
+            log.info("(%s) Skipped handler assignment logic due to explicit configuration` to a single handler: %s",
                      obj.log_str(), configured)
             return True
         for method in self.handler_assignment_methods:
@@ -464,4 +478,4 @@ def _timed_flush_obj(obj):
     obj_flush_timer = ExecutionTimer()
     sa_session = object_session(obj)
     sa_session.flush()
-    log.info("Flushed transaction for %s %s" % (obj.log_str(), obj_flush_timer))
+    log.info(f"Flushed transaction for {obj.log_str()} {obj_flush_timer}")

@@ -17,7 +17,7 @@ from galaxy.util import bunch
 log = logging.getLogger(__name__)
 
 
-class ResourceParser(object):
+class ResourceParser:
     """
     Given a parameter dictionary (often a converted query string) and a
     configuration dictionary (curr. only VisualizationsRegistry uses this),
@@ -29,12 +29,12 @@ class ResourceParser(object):
     new keys (e.g. dataset_id="NNN" -> hda=<HistoryDatasetAssociation>).
     """
     primitive_parsers = {
-        'str'   : lambda param: galaxy.util.sanitize_html.sanitize_html(param),
-        'bool'  : lambda param: galaxy.util.string_as_bool(param),
-        'int'   : int,
-        'float' : float,
+        'str': lambda param: galaxy.util.sanitize_html.sanitize_html(param),
+        'bool': lambda param: galaxy.util.string_as_bool(param),
+        'int': int,
+        'float': float,
         # 'date'  : lambda param: ,
-        'json'  : (lambda param: json.loads(
+        'json': (lambda param: json.loads(
             galaxy.util.sanitize_html.sanitize_html(param))),
     }
 
@@ -44,8 +44,8 @@ class ResourceParser(object):
 
     def _init_managers(self, app):
         return bunch.Bunch(
-            visualization=visualization_manager.VisualizationManager(app),
-            hda=hda_manager.HDAManager(app)
+            visualization=app[visualization_manager.VisualizationManager],
+            hda=app[hda_manager.HDAManager],
         )
 
     def parse_parameter_dictionary(self, trans, param_config_dict, query_params, param_modifiers=None):
@@ -111,8 +111,8 @@ class ResourceParser(object):
                     config_val = self.parse_parameter(trans, param_config, config_val)
 
                 except Exception as exception:
-                    log.warning('Exception parsing visualization param from query: ' +
-                              '%s, %s, (%s) %s' % (param_name, config_val, str(type(exception)), str(exception)))
+                    log.warning('Exception parsing visualization param from query: '
+                              + '{}, {}, ({}) {}'.format(param_name, config_val, str(type(exception)), str(exception)))
                     config_val = None
 
             # here - we've either had no value in the query_params or there was a failure to parse

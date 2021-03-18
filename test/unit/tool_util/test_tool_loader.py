@@ -9,7 +9,7 @@ from .sample_data import SIMPLE_MACRO, SIMPLE_TOOL_WITH_MACRO
 
 def test_loader():
 
-    class TestToolDirectory(object):
+    class TestToolDirectory:
         def __init__(self):
             self.temp_directory = mkdtemp()
 
@@ -85,6 +85,35 @@ def test_loader():
         assert xml.findall("inputs")[0].find("input").get("name") == "first_input"
         assert xml.findall("inputs")[1].find("input").get("name") == "second_input"
         assert xml.findall("inputs")[2].find("input").get("name") == "third_input"
+
+    # Test nested macro with yield statements
+
+    with TestToolDirectory() as tool_dir:
+        tool_dir.write("""
+<tool>
+    <macros>
+        <macro name="paired_options">
+            <when value="paired">
+                <yield />
+            </when>
+            <when value="paired_collection">
+                <yield />
+            </when>
+        </macro>
+        <macro name="single_or_paired_general">
+            <conditional name="library">
+                <expand macro="paired_options">
+                    <yield />
+                </expand>
+            </conditional>
+        </macro>
+    </macros>
+    <inputs>
+        <expand macro="single_or_paired_general"></expand>
+    </inputs>
+</tool>
+""")
+        xml = tool_dir.load()
 
     # Test recursive macro applications.
     with TestToolDirectory() as tool_dir:

@@ -21,20 +21,28 @@ lib/galaxy/web/framework/static/scripts
 lib/galaxy/web/framework/static/style
 
 # Database stuff
+database/*.sqlite
 database/beaker_sessions
+database/cache
 database/citations
 database/community_files
 database/compiled_templates
+database/dependencies
 database/files
-database/jobs_directory
 database/job_working_directory
+database/jobs_directory
+database/mulled
+database/object_store_cache
+database/objects
+database/openid_consumer_cache
 database/pbs
 database/shed_tools
 database/test_errors
 database/tmp
-database/*.sqlite
-database/openid_consumer_cache
-database/dependencies
+database/tool_cache
+database/tool_search_index
+database/tool_recommendation_model.hdf5
+
 
 # Python bytecode
 *.pyc
@@ -84,10 +92,12 @@ job_metrics_conf.xml
 workflow_schedulers_conf.xml
 config/*
 config/plugins/interactive_environments/**/*.ini
+config/plugins/**/.cache
 !config/plugins
 static/welcome.html.*
 static/welcome.html
 static/client_build_hash.txt
+lib/galaxy_test/selenium/jupyter/galaxy_selenium_context.yml
 
 # Tool data.
 tool-data/annotation_profiler_options.xml
@@ -132,7 +142,7 @@ test/unit/**.log
 .idea
 .vscode
 client/**/jsconfig.json
-
+vetur.config.js
 
 # Chrom len files
 *.len
@@ -146,18 +156,16 @@ static/plugins
 static/scripts
 node_modules
 bower_components
-client/galaxy/scripts/libs/*
-client/galaxy/style/less/*
+client/src/libs/*
+# Old galaxy client location
+client/galaxy
 
 # Documentation build files.
 doc/build
 doc/schema.md
 doc/source/admin/config_logging_default_yaml.rst
-doc/source/api/api.rst
-doc/source/api/ts_api.rst
 doc/source/dev/schema.md
-doc/source/dev/schema.rst
-client/styleguide
+client/docs/dist
 
 # webpack stats
 client/webpack-stats.json
@@ -173,5 +181,8 @@ packages/*/*.egg-info
 *.rej
 *~
 
-# Plugin build artifacts -- TODO make this more generic as a part of the standard plugin interface
+# standalone script + main, or build into dist.
+config/plugins/visualizations/**/static/dist
 config/plugins/visualizations/**/static/script.js
+config/plugins/visualizations/**/static/main.css
+config/plugins/visualizations/**/static/plugin_build_hash.txt

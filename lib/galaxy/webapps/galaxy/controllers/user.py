@@ -4,10 +4,9 @@ Contains the user interface in the Universe class
 
 import logging
 from datetime import datetime, timedelta
+from urllib.parse import unquote
 
 from markupsafe import escape
-from six.moves.urllib.parse import unquote
-from sqlalchemy import or_
 from sqlalchemy.orm.exc import NoResultFound
 
 from galaxy import (
@@ -19,9 +18,9 @@ from galaxy.managers import users
 from galaxy.queue_worker import send_local_control_task
 from galaxy.security.validate_user_input import (
     validate_email,
-    validate_password,
     validate_publicname
 )
+from galaxy.structured_app import StructuredApp
 from galaxy.web import expose_api_anonymous_and_sessionless
 from galaxy.web import url_for
 from galaxy.webapps.base.controller import (
@@ -29,6 +28,7 @@ from galaxy.webapps.base.controller import (
     CreatesApiKeysMixin,
     UsesFormDefinitionsMixin
 )
+from ..api import depends
 
 log = logging.getLogger(__name__)
 
@@ -38,11 +38,11 @@ def _filtered_registration_params_dict(payload):
 
 
 class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
+    user_manager: users.UserManager = depends(users.UserManager)
     installed_len_files = None
 
-    def __init__(self, app):
-        super(User, self).__init__(app)
-        self.user_manager = users.UserManager(app)
+    def __init__(self, app: StructuredApp):
+        super().__init__(app)
 
     def __handle_role_and_group_auto_creation(self, trans, user, roles, auto_create_roles=False,
                                               auto_create_groups=False, auto_assign_roles_to_groups_only=False):
@@ -86,13 +86,13 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         try:
             autoreg = trans.app.auth_manager.check_auto_registration(trans, login, password)
         except Conflict as conflict:
-            return "Auto-registration failed, {}".format(conflict), None
+            return f"Auto-registration failed, {conflict}", None
         user = None
         if autoreg["auto_reg"]:
             email = autoreg["email"]
             username = autoreg["username"]
-            message = " ".join([validate_email(trans, email, allow_empty=True),
-                                validate_publicname(trans, username)]).rstrip()
+            message = " ".join((validate_email(trans, email, allow_empty=True),
+                                validate_publicname(trans, username))).rstrip()
             if not message:
                 user = self.user_manager.create(email=email, username=username, password="")
                 if trans.app.config.user_activation_on:
@@ -116,10 +116,11 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         return message, user
 
     @expose_api_anonymous_and_sessionless
-    def login(self, trans, payload={}, **kwd):
+    def login(self, trans, payload=None, **kwd):
+        payload = payload or {}
         return self.__validate_login(trans, payload, **kwd)
 
-    def __validate_login(self, trans, payload={}, **kwd):
+    def __validate_login(self, trans, payload=None, **kwd):
         '''Handle Galaxy Log in'''
         if not payload:
             payload = kwd
@@ -132,10 +133,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         status = None
         if not login or not password:
             return self.message_exception(trans, "Please specify a username and password.")
-        user = trans.sa_session.query(trans.app.model.User).filter(or_(
-            trans.app.model.User.table.c.email == login,
-            trans.app.model.User.table.c.username == login
-        )).first()
+        user = self.user_manager.get_user_by_identity(login)
         log.debug("trans.app.config.auth_config_file: %s" % trans.app.config.auth_config_file)
         if user is None:
             message, user = self.__autoregistration(trans, login, password)
@@ -193,12 +191,14 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         Function resends the verification email in case user wants to log in with an inactive account or he clicks the resend link.
         """
         if email is None:  # User is coming from outside registration form, load email from trans
+            if not trans.user:
+                return "No session found, cannot send activation email.", None
             email = trans.user.email
         if username is None:  # User is coming from outside registration form, load email from trans
             username = trans.user.username
         is_activation_sent = self.user_manager.send_activation_email(trans, email, username)
         if is_activation_sent:
-            message = 'This account has not been activated yet. The activation link has been sent again. Please check your email address <b>%s</b> including the spam/trash folder. <a target="_top" href="%s">Return to the home page</a>.' % (escape(email), url_for('/'))
+            message = 'This account has not been activated yet. The activation link has been sent again. Please check your email address <b>{}</b> including the spam/trash folder. <a target="_top" href="{}">Return to the home page</a>.'.format(escape(email), url_for('/'))
         else:
             message = 'This account has not been activated yet but we are unable to send the activation link. Please contact your local Galaxy administrator. <a target="_top" href="%s">Return to the home page</a>.' % url_for('/')
             if trans.app.config.error_email_to is not None:
@@ -216,6 +216,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         return (time_difference > delta or activation_grace_period == 0)
 
     @web.expose
+    @web.json
     def logout(self, trans, logout_all=False, **kwd):
         message = trans.check_csrf_token(kwd)
         if message:
@@ -225,13 +226,17 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
             # while sometimes, so we don't want to block on logout.
             send_local_control_task(trans.app,
                                     "recalculate_user_disk_usage",
-                                    {"user_id": trans.security.encode_id(trans.user.id)})
+                                    kwargs={"user_id": trans.security.encode_id(trans.user.id)})
         # Since logging an event requires a session, we'll log prior to ending the session
         trans.log_event("User logged out")
         trans.handle_user_logout(logout_all=logout_all)
+        success_response = {"message": "Success."}  # This is a little weird as a response.
+        if trans.app.config.use_remote_user and trans.app.config.remote_user_logout_href:
+            success_response["redirect_uri"] = trans.app.config.remote_user_logout_href
+        return success_response
 
     @expose_api_anonymous_and_sessionless
-    def create(self, trans, payload={}, **kwd):
+    def create(self, trans, payload=None, **kwd):
         if not payload:
             payload = kwd
         message = trans.check_csrf_token(payload)
@@ -271,9 +276,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
                 return trans.show_ok_message("Your account is already active. Nothing has changed. <br><a href='%s'>Go to login page.</a>") % web.url_for(controller='root', action='index')
             if user.activation_token == activation_token:
                 user.activation_token = None
-                user.active = True
-                trans.sa_session.add(user)
-                trans.sa_session.flush()
+                self.user_manager.activate(user)
                 return trans.show_ok_message("Your account has been successfully activated! <br><a href='%s'>Go to login page.</a>") % web.url_for(controller='root', action='index')
             else:
                 #  Tokens don't match. Activation is denied.
@@ -281,7 +284,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         return
 
     @expose_api_anonymous_and_sessionless
-    def change_password(self, trans, payload={}, **kwd):
+    def change_password(self, trans, payload=None, **kwd):
         """
         Allows to change own password.
 
@@ -293,6 +296,7 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
             * password:         new password
             * confirm:          new password (confirmation)
         """
+        payload = payload or {}
         user, message = self.user_manager.change_password(trans, **payload)
         if user is None:
             return self.message_exception(trans, message)
@@ -300,18 +304,13 @@ class User(BaseUIController, UsesFormDefinitionsMixin, CreatesApiKeysMixin):
         return {"message": "Password has been changed."}
 
     @expose_api_anonymous_and_sessionless
-    def reset_password(self, trans, payload={}, **kwd):
+    def reset_password(self, trans, payload=None, **kwd):
         """Reset the user's password. Send an email with token that allows a password change."""
+        payload = payload or {}
         message = self.user_manager.send_reset_email(trans, payload)
         if message:
             return self.message_exception(trans, message)
         return {"message": "Reset link has been sent to your email."}
-
-    def __validate(self, trans, email, password, confirm, username):
-        message = "\n".join([validate_email(trans, email),
-                             validate_password(trans, password, confirm),
-                             validate_publicname(trans, username)]).rstrip()
-        return message
 
     def __get_redirect_url(self, redirect):
         if not redirect or redirect == "None":

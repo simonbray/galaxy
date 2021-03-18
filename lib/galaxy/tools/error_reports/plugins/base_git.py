@@ -1,7 +1,6 @@
 """This module defines the common functions for error reporting for Galaxy jobs towards Git applications (e.g. Github/GitLab).
 """
 
-from __future__ import absolute_import
 
 import logging
 import sys
@@ -9,9 +8,9 @@ from abc import (
     ABCMeta,
     abstractmethod
 )
+from typing import Dict
 
 import requests
-import six
 if sys.version_info[0] < 3:
     import urllib as urllib
     import urlparse as urlparse
@@ -26,16 +25,15 @@ from . import ErrorPlugin
 log = logging.getLogger(__name__)
 
 
-@six.add_metaclass(ABCMeta)
-class BaseGitPlugin(ErrorPlugin):
+class BaseGitPlugin(ErrorPlugin, metaclass=ABCMeta):
     """Base definition to send error reports to a Git repository provider
     """
-    issue_cache = {}
-    ts_urls = {}
-    ts_repo_cache = {}
-    git_project_cache = {}
-    label_cache = {}
-    git_username_id_cache = {}
+    issue_cache: Dict[str, Dict] = {}
+    ts_urls: Dict[str, str] = {}
+    ts_repo_cache: Dict[str, Dict] = {}
+    git_project_cache: Dict[str, Dict] = {}
+    label_cache: Dict[str, Dict] = {}
+    git_username_id_cache: Dict[str, str] = {}
 
     # Git variables
     git_default_repo_owner = False
@@ -45,21 +43,27 @@ class BaseGitPlugin(ErrorPlugin):
     def _determine_ts_url(self, tool):
         if not tool.tool_shed or self.git_default_repo_only:
             return None
-        if tool.tool_shed not in self.ts_urls:
-            ts_url_request = requests.get('http://' + str(tool.tool_shed))
-            self.ts_urls[tool.tool_shed] = ts_url_request.url
-        return self.ts_urls[tool.tool_shed]
+        try:
+            if tool.tool_shed not in self.ts_urls:
+                ts_url_request = requests.get(f"http://{tool.tool_shed}")
+                self.ts_urls[tool.tool_shed] = ts_url_request.url
+            return self.ts_urls[tool.tool_shed]
+        except Exception:
+            return None
 
     def _get_gitrepo_from_ts(self, job, ts_url):
         if not ts_url or self.git_default_repo_only:
             return None
-        if job.tool_id not in self.ts_repo_cache:
-            ts_repo_request_data = requests.get(ts_url + "/api/repositories?tool_ids=" + str(job.tool_id)).json()
+        try:
+            if job.tool_id not in self.ts_repo_cache:
+                ts_repo_request_data = requests.get(ts_url + "/api/repositories?tool_ids=" + str(job.tool_id)).json()
 
-            for changeset, repoinfo in ts_repo_request_data.items():
-                if isinstance(repoinfo, dict):
-                    self.ts_repo_cache[job.tool_id] = repoinfo.get('repository', {}).get('remote_repository_url', None)
-        return self.ts_repo_cache[job.tool_id]
+                for repoinfo in ts_repo_request_data.values():
+                    if isinstance(repoinfo, dict):
+                        self.ts_repo_cache[job.tool_id] = repoinfo.get('repository', {}).get('remote_repository_url', None)
+            return self.ts_repo_cache[job.tool_id]
+        except Exception:
+            return None
 
     def _get_issue_cache_key(self, job, ts_repourl):
         return job.tool_id if ts_repourl else "default"
@@ -75,7 +79,7 @@ class BaseGitPlugin(ErrorPlugin):
 
     def _generate_error_title(self, job):
         tool_kw = {'tool_id': unicodify(job.tool_id), 'tool_version': unicodify(job.tool_version)}
-        return u"""Galaxy Job Error: {tool_id} v{tool_version}""".format(**tool_kw)
+        return """Galaxy Job Error: {tool_id} v{tool_version}""".format(**tool_kw)
 
     @abstractmethod
     def _create_issue(self, issue_cache_key, error_title, error_mesage, project, **kwargs):

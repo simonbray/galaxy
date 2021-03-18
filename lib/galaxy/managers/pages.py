@@ -7,14 +7,32 @@ from within Galaxy.
 """
 import logging
 import re
+from enum import Enum
+from html.entities import name2codepoint
+from html.parser import HTMLParser
+from typing import (
+    Callable,
+    List,
+    Optional,
+)
 
-from six.moves.html_entities import name2codepoint
-from six.moves.html_parser import HTMLParser
+from pydantic import (
+    BaseModel,
+    Extra,
+    Field,
+)
 
 from galaxy import exceptions, model
 from galaxy.managers import base, sharable
-from galaxy.managers.hdas import HDAManager
+from galaxy.managers.context import ProvidesHistoryContext
+from galaxy.managers.markdown_util import (
+    internal_galaxy_markdown_to_pdf,
+    ready_galaxy_markdown_for_export,
+    ready_galaxy_markdown_for_import,
+)
 from galaxy.model.item_attrs import UsesAnnotations
+from galaxy.schema.fields import EncodedDatabaseIdField
+from galaxy.structured_app import StructuredApp
 from galaxy.util import unicodify
 from galaxy.util.sanitize_html import sanitize_html
 
@@ -22,34 +40,250 @@ log = logging.getLogger(__name__)
 
 # Copied from https://github.com/kurtmckee/feedparser
 _cp1252 = {
-    128: u'\u20ac',  # euro sign
-    130: u'\u201a',  # single low-9 quotation mark
-    131: u'\u0192',  # latin small letter f with hook
-    132: u'\u201e',  # double low-9 quotation mark
-    133: u'\u2026',  # horizontal ellipsis
-    134: u'\u2020',  # dagger
-    135: u'\u2021',  # double dagger
-    136: u'\u02c6',  # modifier letter circumflex accent
-    137: u'\u2030',  # per mille sign
-    138: u'\u0160',  # latin capital letter s with caron
-    139: u'\u2039',  # single left-pointing angle quotation mark
-    140: u'\u0152',  # latin capital ligature oe
-    142: u'\u017d',  # latin capital letter z with caron
-    145: u'\u2018',  # left single quotation mark
-    146: u'\u2019',  # right single quotation mark
-    147: u'\u201c',  # left double quotation mark
-    148: u'\u201d',  # right double quotation mark
-    149: u'\u2022',  # bullet
-    150: u'\u2013',  # en dash
-    151: u'\u2014',  # em dash
-    152: u'\u02dc',  # small tilde
-    153: u'\u2122',  # trade mark sign
-    154: u'\u0161',  # latin small letter s with caron
-    155: u'\u203a',  # single right-pointing angle quotation mark
-    156: u'\u0153',  # latin small ligature oe
-    158: u'\u017e',  # latin small letter z with caron
-    159: u'\u0178',  # latin capital letter y with diaeresis
+    128: '\u20ac',  # euro sign
+    130: '\u201a',  # single low-9 quotation mark
+    131: '\u0192',  # latin small letter f with hook
+    132: '\u201e',  # double low-9 quotation mark
+    133: '\u2026',  # horizontal ellipsis
+    134: '\u2020',  # dagger
+    135: '\u2021',  # double dagger
+    136: '\u02c6',  # modifier letter circumflex accent
+    137: '\u2030',  # per mille sign
+    138: '\u0160',  # latin capital letter s with caron
+    139: '\u2039',  # single left-pointing angle quotation mark
+    140: '\u0152',  # latin capital ligature oe
+    142: '\u017d',  # latin capital letter z with caron
+    145: '\u2018',  # left single quotation mark
+    146: '\u2019',  # right single quotation mark
+    147: '\u201c',  # left double quotation mark
+    148: '\u201d',  # right double quotation mark
+    149: '\u2022',  # bullet
+    150: '\u2013',  # en dash
+    151: '\u2014',  # em dash
+    152: '\u02dc',  # small tilde
+    153: '\u2122',  # trade mark sign
+    154: '\u0161',  # latin small letter s with caron
+    155: '\u203a',  # single right-pointing angle quotation mark
+    156: '\u0153',  # latin small ligature oe
+    158: '\u017e',  # latin small letter z with caron
+    159: '\u0178',  # latin capital letter y with diaeresis
 }
+
+
+class PageContentFormat(str, Enum):
+    markdown = "markdown"
+    html = "html"
+
+
+ContentFormatField: PageContentFormat = Field(
+    default=PageContentFormat.html,
+    title="Content format",
+    description="Either `markdown` or `html`.",
+)
+
+ContentField: Optional[str] = Field(
+    default="",
+    title="Content",
+    description="Raw text contents of the first page revision (type dependent on content_format).",
+)
+
+
+class PageSummaryBase(BaseModel):
+    title: str = Field(
+        ...,  # Required
+        title="Title",
+        description="The name of the page",
+    )
+    slug: str = Field(
+        ...,  # Required
+        title="Identifier",
+        description="The title slug for the page URL, must be unique.",
+        regex=r"^[a-z0-9\-]+$",
+    )
+
+
+class CreatePagePayload(PageSummaryBase):
+    content_format: PageContentFormat = ContentFormatField
+    content: Optional[str] = ContentField
+    annotation: Optional[str] = Field(
+        default=None,
+        title="Annotation",
+        description="Annotation that will be attached to the page.",
+    )
+    invocation_id: Optional[EncodedDatabaseIdField] = Field(
+        None,
+        title="Workflow invocation ID",
+        description="Encoded ID used by workflow generated reports.",
+    )
+
+    class Config:
+        use_enum_values = True  # When using .dict()
+        extra = Extra.allow  # Allow any other extra fields
+
+
+class PageSummary(PageSummaryBase):
+    id: EncodedDatabaseIdField = Field(
+        ...,  # Required
+        title="ID",
+        description="Encoded ID of the Page.",
+    )
+    model_class: str = Field(
+        ...,  # Required
+        title="Model class",
+        description="The class of the model associated with the ID.",
+        example="Page",
+    )
+    username: str = Field(
+        ...,  # Required
+        title="Username",
+        description="The name of the user owning this Page.",
+    )
+    published: bool = Field(
+        ...,  # Required
+        title="Published",
+        description="Whether this Page has been published.",
+    )
+    importable: bool = Field(
+        ...,  # Required
+        title="Importable",
+        description="Whether this Page can be imported.",
+    )
+    deleted: bool = Field(
+        ...,  # Required
+        title="Deleted",
+        description="Whether this Page has been deleted.",
+    )
+    latest_revision_id: EncodedDatabaseIdField = Field(
+        ...,  # Required
+        title="Latest revision ID",
+        description="The encoded ID of the last revision of this Page.",
+    )
+    revision_ids: List[EncodedDatabaseIdField] = Field(
+        ...,  # Required
+        title="List of revisions",
+        description="The history with the encoded ID of each revision of the Page.",
+    )
+
+
+class PageDetails(PageSummary):
+    content_format: PageContentFormat = ContentFormatField
+    content: Optional[str] = ContentField
+    generate_version: Optional[str] = Field(
+        None,
+        title="Galaxy Version",
+        description="The version of Galaxy this page was generated with.",
+    )
+    generate_time: Optional[str] = Field(
+        None,
+        title="Generate Date",
+        description="The date this page was generated.",
+    )
+
+    class Config:
+        extra = Extra.allow  # Allow any other extra fields
+
+
+class PageSummaryList(BaseModel):
+    __root__: List[PageSummary] = Field(
+        default=[],
+        title='List with summary information of Pages.',
+    )
+
+
+class PagesManager:
+    """
+    Common interface/service logic for interactions with pages.
+    """
+
+    def __init__(self, app: StructuredApp):
+        self.manager = PageManager(app)
+
+    def index(self, trans, deleted: bool = False) -> PageSummaryList:
+        """Return a list of Pages viewable by the user
+
+        :param deleted: Display deleted pages
+
+        :rtype:     list
+        :returns:   dictionaries containing summary or detailed Page information
+        """
+        out = []
+
+        if trans.user_is_admin:
+            r = trans.sa_session.query(model.Page)
+            if not deleted:
+                r = r.filter_by(deleted=False)
+            for row in r:
+                out.append(trans.security.encode_all_ids(row.to_dict(), recursive=True))
+        else:
+            # Transaction user's pages (if any)
+            user = trans.user
+            r = trans.sa_session.query(model.Page).filter_by(user=user)
+            if not deleted:
+                r = r.filter_by(deleted=False)
+            for row in r:
+                out.append(trans.security.encode_all_ids(row.to_dict(), recursive=True))
+            # Published pages from other users
+            r = trans.sa_session.query(model.Page).filter(model.Page.user != user).filter_by(published=True)
+            if not deleted:
+                r = r.filter_by(deleted=False)
+            for row in r:
+                out.append(trans.security.encode_all_ids(row.to_dict(), recursive=True))
+
+        return PageSummaryList.parse_obj(out)
+
+    def create(self, trans, payload: CreatePagePayload) -> PageSummary:
+        """
+        Create a page and return Page summary
+        """
+        page = self.manager.create(trans, payload.dict())
+        rval = trans.security.encode_all_ids(page.to_dict(), recursive=True)
+        rval['content'] = page.latest_revision.content
+        self.manager.rewrite_content_for_export(trans, rval)
+        return PageSummary.parse_obj(rval)
+
+    def delete(self, trans, id: EncodedDatabaseIdField):
+        """
+        Deletes a page (or marks it as deleted)
+        """
+        page = base.get_object(trans, id, 'Page', check_ownership=True)
+
+        # Mark a page as deleted
+        page.deleted = True
+        trans.sa_session.flush()
+
+    def show(self, trans, id: EncodedDatabaseIdField) -> PageDetails:
+        """
+            View a page summary and the content of the latest revision
+
+        :param  id:    ID of page to be displayed
+
+        :rtype:     dict
+        :returns:   Dictionary return of the Page.to_dict call with the 'content' field populated by the most recent revision
+        """
+        page = base.get_object(trans, id, 'Page', check_ownership=False, check_accessible=True)
+        rval = trans.security.encode_all_ids(page.to_dict(), recursive=True)
+        rval['content'] = page.latest_revision.content
+        rval['content_format'] = page.latest_revision.content_format
+        self.manager.rewrite_content_for_export(trans, rval)
+        return PageDetails.parse_obj(rval)
+
+    def show_pdf(self, trans, id: EncodedDatabaseIdField):
+        """
+        GET /api/pages/{id}.pdf
+
+        View a page summary and the content of the latest revision as PDF.
+
+        :param  id: ID of page to be displayed
+
+        :rtype: dict
+        :returns: Dictionary return of the Page.to_dict call with the 'content' field populated by the most recent revision
+        """
+        page = base.get_object(trans, id, 'Page', check_ownership=False, check_accessible=True)
+        if page.latest_revision.content_format != PageContentFormat.markdown.value:
+            raise exceptions.RequestParameterInvalidException("PDF export only allowed for Markdown based pages")
+        internal_galaxy_markdown = page.latest_revision.content
+        trans.response.set_content_type("application/pdf")
+        return internal_galaxy_markdown_to_pdf(trans, internal_galaxy_markdown, 'page')
 
 
 class PageManager(sharable.SharableModelManager, UsesAnnotations):
@@ -64,30 +298,33 @@ class PageManager(sharable.SharableModelManager, UsesAnnotations):
     annotation_assoc = model.PageAnnotationAssociation
     rating_assoc = model.PageRatingAssociation
 
-    def __init__(self, app, *args, **kwargs):
+    def __init__(self, app: StructuredApp):
         """
         """
-        super(PageManager, self).__init__(app, *args, **kwargs)
-
-    def copy(self, trans, page, user, **kwargs):
-        """
-        """
-        pass
+        super().__init__(app)
+        self.workflow_manager = app.workflow_manager
 
     def create(self, trans, payload):
         user = trans.get_user()
 
-        if not payload.get("title", None):
+        if not payload.get("title"):
             raise exceptions.ObjectAttributeMissingException("Page name is required")
-        elif not payload.get("slug", None):
+        elif not payload.get("slug"):
             raise exceptions.ObjectAttributeMissingException("Page id is required")
         elif not base.is_valid_slug(payload["slug"]):
             raise exceptions.ObjectAttributeInvalidException("Page identifier must consist of only lowercase letters, numbers, and the '-' character")
         elif trans.sa_session.query(trans.app.model.Page).filter_by(user=user, slug=payload["slug"], deleted=False).first():
             raise exceptions.DuplicatedSlugException("Page identifier must be unique")
 
-        content = payload.get("content", "")
-        content = self.rewrite_content_for_import(trans, content)
+        if payload.get("invocation_id"):
+            invocation_id = payload.get("invocation_id")
+            invocation_report = self.workflow_manager.get_invocation_report(trans, invocation_id)
+            content = invocation_report.get("markdown")
+            content_format = "markdown"
+        else:
+            content = payload.get("content", "")
+            content_format = payload.get("content_format", "html")
+        content = self.rewrite_content_for_import(trans, content, content_format)
 
         # Create the new stored page
         page = trans.app.model.Page()
@@ -105,6 +342,7 @@ class PageManager(sharable.SharableModelManager, UsesAnnotations):
         page_revision.page = page
         page.latest_revision = page_revision
         page_revision.content = content
+        page_revision.content_format = content_format
         # Persist
         session = trans.sa_session
         session.add(page)
@@ -114,46 +352,65 @@ class PageManager(sharable.SharableModelManager, UsesAnnotations):
     def save_new_revision(self, trans, page, payload):
         # Assumes security has already been checked by caller.
         content = payload.get("content", None)
+        content_format = payload.get("content_format", None)
         if not content:
             raise exceptions.ObjectAttributeMissingException("content undefined or empty")
+        if content_format not in [None, PageContentFormat.html.value, PageContentFormat.markdown.value]:
+            raise exceptions.RequestParameterInvalidException("content_format [%s], if specified, must be either html or markdown" % content_format)
 
         if 'title' in payload:
             title = payload['title']
         else:
             title = page.title
 
-        content = self.rewrite_content_for_import(trans, content)
+        if content_format is None:
+            content_format = page.latest_revision.content_format
+        content = self.rewrite_content_for_import(trans, content, content_format=content_format)
 
         page_revision = trans.app.model.PageRevision()
         page_revision.title = title
         page_revision.page = page
         page.latest_revision = page_revision
         page_revision.content = content
+        page_revision.content_format = content_format
 
         # Persist
         session = trans.sa_session
         session.flush()
         return page_revision
 
-    def rewrite_content_for_import(self, trans, content):
-        try:
-            content = sanitize_html(content)
-            processor = PageContentProcessor(trans, placeholderRenderForSave)
-            processor.feed(content)
-            # Output is string, so convert to unicode for saving.
-            content = unicodify(processor.output(), 'utf-8')
-        except exceptions.MessageException:
-            raise
-        except Exception:
-            raise exceptions.RequestParameterInvalidException("problem with embedded HTML content [%s]" % content)
+    def rewrite_content_for_import(self, trans, content, content_format: str):
+        if content_format == PageContentFormat.html.value:
+            try:
+                content = sanitize_html(content)
+                processor = PageContentProcessor(trans, placeholderRenderForSave)
+                processor.feed(content)
+                # Output is string, so convert to unicode for saving.
+                content = unicodify(processor.output(), 'utf-8')
+            except exceptions.MessageException:
+                raise
+            except Exception:
+                raise exceptions.RequestParameterInvalidException("problem with embedded HTML content [%s]" % content)
+        elif content_format == PageContentFormat.markdown.value:
+            content = ready_galaxy_markdown_for_import(trans, content)
+        else:
+            raise exceptions.RequestParameterInvalidException("content_format [%s] must be either html or markdown" % content_format)
         return content
 
     def rewrite_content_for_export(self, trans, as_dict):
         content = as_dict["content"]
-        processor = PageContentProcessor(trans, placeholderRenderForEdit)
-        processor.feed(content)
-        content = unicodify(processor.output(), 'utf-8')
-        as_dict["content"] = content
+        content_format = as_dict.get("content_format", PageContentFormat.html.value)
+        if content_format == PageContentFormat.html.value:
+            processor = PageContentProcessor(trans, placeholderRenderForEdit)
+            processor.feed(content)
+            content = unicodify(processor.output(), 'utf-8')
+            as_dict["content"] = content
+        elif content_format == PageContentFormat.markdown.value:
+            content, extra_attributes = ready_galaxy_markdown_for_export(trans, content)
+            as_dict["content"] = content
+            as_dict.update(extra_attributes)
+        else:
+            raise exceptions.RequestParameterInvalidException("content_format [%s] must be either html or markdown" % content_format)
         return as_dict
 
 
@@ -164,8 +421,8 @@ class PageSerializer(sharable.SharableModelSerializer):
     model_manager_class = PageManager
     SINGLE_CHAR_ABBR = 'p'
 
-    def __init__(self, app):
-        super(PageSerializer, self).__init__(app)
+    def __init__(self, app: StructuredApp):
+        super().__init__(app)
         self.page_manager = PageManager(app)
 
         self.default_view = 'summary'
@@ -173,7 +430,7 @@ class PageSerializer(sharable.SharableModelSerializer):
         self.add_view('detailed', [])
 
     def add_serializers(self):
-        super(PageSerializer, self).add_serializers()
+        super().add_serializers()
         self.serializers.update({
         })
 
@@ -185,30 +442,30 @@ class PageDeserializer(sharable.SharableModelDeserializer):
     """
     model_manager_class = PageManager
 
-    def __init__(self, app):
-        super(PageDeserializer, self).__init__(app)
+    def __init__(self, app: StructuredApp):
+        super().__init__(app)
         self.page_manager = self.manager
 
     def add_deserializers(self):
-        super(PageDeserializer, self).add_deserializers()
+        super().add_deserializers()
         self.deserializers.update({
         })
         self.deserializable_keyset.update(self.deserializers.keys())
 
 
-class PageContentProcessor(HTMLParser, object):
+class PageContentProcessor(HTMLParser):
     """
     Processes page content to produce HTML that is suitable for display.
     For now, processor renders embedded objects.
     """
     bare_ampersand = re.compile(r"&(?!#\d+;|#x[0-9a-fA-F]+;|\w+;)")
-    elements_no_end_tag = set([
+    elements_no_end_tag = {
         'area', 'base', 'basefont', 'br', 'col', 'command', 'embed', 'frame',
         'hr', 'img', 'input', 'isindex', 'keygen', 'link', 'meta', 'param',
         'source', 'track', 'wbr'
-    ])
+    }
 
-    def __init__(self, trans, render_embed_html_fn):
+    def __init__(self, trans, render_embed_html_fn: Callable):
         HTMLParser.__init__(self)
         self.trans = trans
         self.ignore_content = False
@@ -277,11 +534,11 @@ class PageContentProcessor(HTMLParser, object):
                 value = value.replace('>', '&gt;').replace('<', '&lt;').replace('"', '&quot;')
                 value = self.bare_ampersand.sub("&amp;", value)
                 uattrs.append((key, value))
-            strattrs = ''.join(' %s="%s"' % (k, v) for k, v in uattrs)
+            strattrs = ''.join(f' {k}="{v}"' for k, v in uattrs)
         if tag in self.elements_no_end_tag:
-            self.pieces.append('<%s%s />' % (tag, strattrs))
+            self.pieces.append(f'<{tag}{strattrs} />')
         else:
-            self.pieces.append('<%s%s>' % (tag, strattrs))
+            self.pieces.append(f'<{tag}{strattrs}>')
 
     def handle_endtag(self, tag):
         """
@@ -385,28 +642,28 @@ PAGE_CLASS_MAPPING = {
 }
 
 
-def placeholderRenderForEdit(trans, item_class, item_id):
+def placeholderRenderForEdit(trans: ProvidesHistoryContext, item_class, item_id):
     return placeholderRenderForSave(trans, item_class, item_id, encode=True)
 
 
-def placeholderRenderForSave(trans, item_class, item_id, encode=False):
+def placeholderRenderForSave(trans: ProvidesHistoryContext, item_class, item_id, encode=False):
     encoded_item_id, decoded_item_id = get_page_identifiers(item_id, trans.app)
     item_name = ''
     if item_class == 'History':
-        history = trans.sa_session.query(trans.model.History).get(decoded_item_id)
+        history = trans.sa_session.query(model.History).get(decoded_item_id)
         history = base.security_check(trans, history, False, True)
         item_name = history.name
     elif item_class == 'HistoryDatasetAssociation':
-        hda = trans.sa_session.query(trans.model.HistoryDatasetAssociation).get(decoded_item_id)
-        hda_manager = HDAManager(trans.app)
+        hda = trans.sa_session.query(model.HistoryDatasetAssociation).get(decoded_item_id)
+        hda_manager = trans.app.hda_manager
         hda = hda_manager.get_accessible(decoded_item_id, trans.user)
         item_name = hda.name
     elif item_class == 'StoredWorkflow':
-        wf = trans.sa_session.query(trans.model.StoredWorkflow).get(decoded_item_id)
+        wf = trans.sa_session.query(model.StoredWorkflow).get(decoded_item_id)
         wf = base.security_check(trans, wf, False, True)
         item_name = wf.name
     elif item_class == 'Visualization':
-        visualization = trans.sa_session.query(trans.model.Visualization).get(decoded_item_id)
+        visualization = trans.sa_session.query(model.Visualization).get(decoded_item_id)
         visualization = base.security_check(trans, visualization, False, True)
         item_name = visualization.title
     class_shorthand = PAGE_CLASS_MAPPING[item_class]

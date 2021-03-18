@@ -1,8 +1,8 @@
 """Binary classes"""
-from __future__ import print_function
 
 import binascii
 import gzip
+import io
 import logging
 import os
 import shutil
@@ -12,13 +12,13 @@ import sys
 import tarfile
 import tempfile
 import zipfile
-from collections import OrderedDict
 from json import dumps
+from typing import Optional
 
 import h5py
 import pysam
 import pysam.bcftools
-from bx.seq.twobit import TWOBIT_MAGIC_NUMBER, TWOBIT_MAGIC_NUMBER_SWAP, TWOBIT_MAGIC_SIZE
+from bx.seq.twobit import TWOBIT_MAGIC_NUMBER, TWOBIT_MAGIC_NUMBER_SWAP
 
 from galaxy import util
 from galaxy.datatypes import metadata
@@ -27,11 +27,15 @@ from galaxy.datatypes.data import (
     get_file_peek,
 )
 from galaxy.datatypes.metadata import DictParameter, ListParameter, MetadataElement, MetadataParameter
+from galaxy.datatypes.sniff import build_sniff_from_prefix
 from galaxy.util import nice_size, sqlite
 from galaxy.util.checkers import is_bz2, is_gzip
 from . import data, dataproviders
 
 log = logging.getLogger(__name__)
+# pysam 0.16.0.1 emits logs containing the word 'Error', this can confuse the stdout/stderr checkers.
+# Can be be removed once https://github.com/pysam-developers/pysam/issues/939 is resolved.
+pysam.set_verbosity(0)
 
 # Currently these supported binary data types must be manually set on upload
 
@@ -43,14 +47,12 @@ class Binary(data.Data):
     @staticmethod
     def register_sniffable_binary_format(data_type, ext, type_class):
         """Deprecated method."""
-        pass
 
     @staticmethod
     def register_unsniffable_binary_ext(ext):
         """Deprecated method."""
-        pass
 
-    def set_peek(self, dataset, is_multi_byte=False):
+    def set_peek(self, dataset, **kwd):
         """Set the peek and blurb text"""
         if not dataset.dataset.purged:
             dataset.peek = 'binary data'
@@ -248,6 +250,16 @@ class CompressedZipArchive(CompressedArchive):
         except Exception:
             return "Compressed zip file (%s)" % (nice_size(dataset.get_size()))
 
+    def sniff(self, filename):
+        with zipfile.ZipFile(filename) as zf:
+            zf_files = zf.infolist()
+            count = 0
+            for f in zf_files:
+                if f.file_size > 0 and not f.filename.startswith('__MACOSX/') and not f.filename.endswith('.DS_Store'):
+                    count += 1
+                if count > 1:
+                    return True
+
 
 class GenericAsn1Binary(Binary):
     """Class for generic ASN.1 binary format"""
@@ -261,7 +273,7 @@ class BamNative(CompressedArchive):
     edam_format = "format_2572"
     edam_data = "data_0863"
     file_ext = "unsorted.bam"
-    sort_flag = None
+    sort_flag: Optional[str] = None
 
     MetadataElement(name="bam_version", default=None, desc="BAM Version", param=MetadataParameter, readonly=True, visible=False, optional=True, no_value=None)
     MetadataElement(name="sort_order", default=None, desc="Sort Order", param=MetadataParameter, readonly=True, visible=False, optional=True, no_value=None)
@@ -307,7 +319,7 @@ class BamNative(CompressedArchive):
             # TODO: Reference names, lengths, read_groups and headers can become very large, truncate when necessary
             dataset.metadata.reference_names = list(bam_file.references)
             dataset.metadata.reference_lengths = list(bam_file.lengths)
-            dataset.metadata.bam_header = OrderedDict((k, v) for k, v in bam_file.header.items())
+            dataset.metadata.bam_header = dict(bam_file.header.items())
             dataset.metadata.read_groups = [read_group['ID'] for read_group in dataset.metadata.bam_header.get('RG', []) if 'ID' in read_group]
             dataset.metadata.sort_order = dataset.metadata.bam_header.get('HD', {}).get('SO', None)
             dataset.metadata.bam_version = dataset.metadata.bam_header.get('HD', {}).get('VN', None)
@@ -330,12 +342,12 @@ class BamNative(CompressedArchive):
         except Exception:
             return "Binary bam alignments file (%s)" % (nice_size(dataset.get_size()))
 
-    def to_archive(self, trans, dataset, name=""):
+    def to_archive(self, dataset, name=""):
         rel_paths = []
         file_paths = []
-        rel_paths.append("%s.%s" % (name or dataset.file_name, dataset.extension))
+        rel_paths.append("{}.{}".format(name or dataset.file_name, dataset.extension))
         file_paths.append(dataset.file_name)
-        rel_paths.append("%s.%s.bai" % (name or dataset.file_name, dataset.extension))
+        rel_paths.append("{}.{}.bai".format(name or dataset.file_name, dataset.extension))
         file_paths.append(dataset.metadata.bam_index.file_name)
         return zip(file_paths, rel_paths)
 
@@ -392,7 +404,7 @@ class BamNative(CompressedArchive):
                             # Galaxy display each tag as separate column because 'tostring()' funcition put tabs in between each tag of tags column.
                             # Below code will remove spaces between each tag.
                             bamline_modified = ('\t').join(bamline.split()[:11] + [(' ').join(bamline.split()[11:])])
-                            ck_data = "%s\n%s" % (ck_data, bamline_modified)
+                            ck_data = f"{ck_data}\n{bamline_modified}"
                     else:
                         # Nothing to enumerate; we've either offset to the end
                         # of the bamfile, or there is no data. (possible with
@@ -412,7 +424,7 @@ class BamNative(CompressedArchive):
         if offset is not None:
             return self.get_chunk(trans, dataset, offset, ck_size)
         elif to_ext or not preview:
-            return super(BamNative, self).display_data(trans, dataset, preview, filename, to_ext, **kwd)
+            return super().display_data(trans, dataset, preview, filename, to_ext, **kwd)
         else:
             column_names = dataset.metadata.column_names
             if not column_names:
@@ -448,6 +460,21 @@ class Bam(BamNative):
     data_sources = {"data": "bai", "index": "bigwig"}
 
     MetadataElement(name="bam_index", desc="BAM Index File", param=metadata.FileParameter, file_ext="bai", readonly=True, no_value=None, visible=False, optional=True)
+    MetadataElement(name="bam_csi_index", desc="BAM CSI Index File", param=metadata.FileParameter, file_ext="bam.csi", readonly=True, no_value=None, visible=False, optional=True)
+
+    def get_index_flag(self, file_name):
+        """
+        Return pysam flag for bai index (default) or csi index (contig size > (2**29 - 1) )
+        """
+        index_flag = '-b'  # bai index
+        try:
+            with pysam.AlignmentFile(file_name) as alignment_file:
+                if max(alignment_file.header.lengths) > (2 ** 29) - 1:
+                    index_flag = '-c'  # csi index
+        except Exception:
+            # File may not have a header, that's OK
+            pass
+        return index_flag
 
     def dataset_content_needs_grooming(self, file_name):
         """
@@ -455,12 +482,17 @@ class Bam(BamNative):
         """
         # The best way to ensure that BAM files are coordinate-sorted and indexable
         # is to actually index them.
+        index_flag = self.get_index_flag(file_name)
         index_name = tempfile.NamedTemporaryFile(prefix="bam_index").name
         try:
             # If pysam fails to index a file it will write to stderr,
             # and this causes the set_meta script to fail. So instead
             # we start another process and discard stderr.
-            cmd = ['python', '-c', "import pysam; pysam.index('%s', '%s')" % (file_name, index_name)]
+            if index_flag == '-b':
+                # IOError: No such file or directory: '-b' if index_flag is set to -b (pysam 0.15.4)
+                cmd = ['python', '-c', f"import pysam; pysam.set_verbosity(0); pysam.index('{file_name}', '{index_name}')"]
+            else:
+                cmd = ['python', '-c', f"import pysam; pysam.set_verbosity(0); pysam.index('{index_flag}', '{file_name}', '{index_name}')"]
             with open(os.devnull, 'w') as devnull:
                 subprocess.check_call(cmd, stderr=devnull, shell=False)
             needs_sorting = False
@@ -474,15 +506,25 @@ class Bam(BamNative):
 
     def set_meta(self, dataset, overwrite=True, **kwd):
         # These metadata values are not accessible by users, always overwrite
-        super(Bam, self).set_meta(dataset=dataset, overwrite=overwrite, **kwd)
-        index_file = dataset.metadata.bam_index
+        super().set_meta(dataset=dataset, overwrite=overwrite, **kwd)
+        index_flag = self.get_index_flag(dataset.file_name)
+        if index_flag == '-b':
+            spec_key = 'bam_index'
+            index_file = dataset.metadata.bam_index
+        else:
+            spec_key = 'bam_csi_index'
+            index_file = dataset.metadata.bam_csi_index
         if not index_file:
-            index_file = dataset.metadata.spec['bam_index'].param.new_file(dataset=dataset)
-        pysam.index(dataset.file_name, index_file.file_name)
+            index_file = dataset.metadata.spec[spec_key].param.new_file(dataset=dataset)
+        if index_flag == '-b':
+            # IOError: No such file or directory: '-b' if index_flag is set to -b (pysam 0.15.4)
+            pysam.index(dataset.file_name, index_file.file_name)
+        else:
+            pysam.index(index_flag, dataset.file_name, index_file.file_name)
         dataset.metadata.bam_index = index_file
 
     def sniff(self, file_name):
-        return super(Bam, self).sniff(file_name) and not self.dataset_content_needs_grooming(file_name)
+        return super().sniff(file_name) and not self.dataset_content_needs_grooming(file_name)
 
     # ------------- Dataproviders
     # pipe through samtools view
@@ -519,12 +561,12 @@ class Bam(BamNative):
     # @dataproviders.decorators.dataprovider_factory('dataset-column', dataproviders.column.ColumnarDataProvider.settings)
     # def dataset_column_dataprovider(self, dataset, **settings):
     #    settings['comment_char'] = '@'
-    #    return super(Sam, self).dataset_column_dataprovider(dataset, **settings)
+    #    return super().dataset_column_dataprovider(dataset, **settings)
 
     # @dataproviders.decorators.dataprovider_factory('dataset-dict', dataproviders.column.DictDataProvider.settings)
     # def dataset_dict_dataprovider(self, dataset, **settings):
     #    settings['comment_char'] = '@'
-    #    return super(Sam, self).dataset_dict_dataprovider(dataset, **settings)
+    #    return super().dataset_dict_dataprovider(dataset, **settings)
 
     @dataproviders.decorators.dataprovider_factory('header', dataproviders.line.RegexLineDataProvider.settings)
     def header_dataprovider(self, dataset, **settings):
@@ -761,7 +803,7 @@ class H5(Binary):
     edam_format = "format_3590"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic = binascii.unhexlify("894844460d0a1a0a")
 
     def sniff(self, filename):
@@ -823,7 +865,7 @@ class Loom(H5):
     MetadataElement(name="row_graphs_names", desc="row_graphs_names", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
 
     def sniff(self, filename):
-        if super(Loom, self).sniff(filename):
+        if super().sniff(filename):
             with h5py.File(filename, 'r') as loom_file:
                 # Check the optional but distinctive LOOM_SPEC_VERSION attribute
                 if bool(loom_file.attrs.get('LOOM_SPEC_VERSION')):
@@ -851,15 +893,15 @@ class Loom(H5):
             return "Binary Loom file (%s)" % (nice_size(dataset.get_size()))
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(Loom, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             with h5py.File(dataset.file_name, 'r') as loom_file:
-                dataset.metadata.title = util.unicodify(loom_file.attrs.get('title'))
-                dataset.metadata.description = util.unicodify(loom_file.attrs.get('description'))
-                dataset.metadata.url = util.unicodify(loom_file.attrs.get('url'))
-                dataset.metadata.doi = util.unicodify(loom_file.attrs.get('doi'))
-                dataset.metadata.loom_spec_version = util.unicodify(loom_file.attrs.get('LOOM_SPEC_VERSION'))
-                dataset.creation_date = util.unicodify(loom_file.attrs.get('creation_date'))
+                dataset.metadata.title = loom_file.attrs.get('title')
+                dataset.metadata.description = loom_file.attrs.get('description')
+                dataset.metadata.url = loom_file.attrs.get('url')
+                dataset.metadata.doi = loom_file.attrs.get('doi')
+                dataset.metadata.loom_spec_version = loom_file.attrs.get('LOOM_SPEC_VERSION')
+                dataset.creation_date = loom_file.attrs.get('creation_date')
                 dataset.metadata.shape = tuple(loom_file['matrix'].shape)
 
                 tmp = list(loom_file.get('layers', {}).keys())
@@ -897,11 +939,56 @@ class Anndata(H5):
     True
     >>> Anndata().sniff(get_test_fname('test.mz5'))
     False
+    >>> Anndata().sniff(get_test_fname('import.loom.krumsiek11.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_0_6_small2.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_0_6_small.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_0_7_4_small2.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_0_7_4_small.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_unk2.h5ad'))
+    True
+    >>> Anndata().sniff(get_test_fname('adata_unk.h5ad'))
+    True
     """
     file_ext = 'h5ad'
 
+    MetadataElement(name="title", default="", desc="title", readonly=True, visible=True, no_value="")
+    MetadataElement(name="description", default="", desc="description", readonly=True, visible=True, no_value="")
+    MetadataElement(name="url", default="", desc="url", readonly=True, visible=True, no_value="")
+    MetadataElement(name="doi", default="", desc="doi", readonly=True, visible=True, no_value="")
+    MetadataElement(name="anndata_spec_version", default="", desc="anndata_spec_version", readonly=True, visible=True, no_value="")
+    MetadataElement(name="creation_date", default=None, desc="creation_date", readonly=True, visible=True, no_value=None)
+    MetadataElement(name="layers_count", default=0, desc="layers_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="layers_names", desc="layers_names", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="row_attrs_count", default=0, desc="row_attrs_count", readonly=True, visible=True, no_value=0)
+    # obs_names: Cell1, Cell2, Cell3,...
+    # obs_layers: louvain, leidein, isBcell
+    # obs_count: number of obs_layers
+    # obs_size: number of obs_names
+    MetadataElement(name="obs_names", desc="obs_names", default=[], multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="obs_layers", desc="obs_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="obs_count", default=0, desc="obs_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="obs_size", default=-1, desc="obs_size", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="obsm_layers", desc="obsm_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="obsm_count", default=0, desc="obsm_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="raw_var_layers", desc="raw_var_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="raw_var_count", default=0, desc="raw_var_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="raw_var_size", default=0, desc="raw_var_size", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="var_layers", desc="var_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="var_count", default=0, desc="var_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="var_size", default=-1, desc="var_size", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="varm_layers", desc="varm_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="varm_count", default=0, desc="varm_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="uns_layers", desc="uns_layers", default=[], param=metadata.SelectParameter, multiple=True, readonly=True, no_value=None)
+    MetadataElement(name="uns_count", default=0, desc="uns_count", readonly=True, visible=True, no_value=0)
+    MetadataElement(name="shape", default=(-1, -1), desc="shape", param=metadata.ListParameter, readonly=True, visible=True, no_value=(0, 0))
+
     def sniff(self, filename):
-        if super(Anndata, self).sniff(filename):
+        if super().sniff(filename):
             try:
                 with h5py.File(filename, 'r') as f:
                     return all(attr in f for attr in ['X', 'obs', 'var'])
@@ -909,24 +996,159 @@ class Anndata(H5):
                 return False
         return False
 
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+        with h5py.File(dataset.file_name, 'r') as anndata_file:
+            dataset.metadata.title = anndata_file.attrs.get('title')
+            dataset.metadata.description = anndata_file.attrs.get('description')
+            dataset.metadata.url = anndata_file.attrs.get('url')
+            dataset.metadata.doi = anndata_file.attrs.get('doi')
+            dataset.creation_date = anndata_file.attrs.get('creation_date')
+            dataset.metadata.shape = anndata_file.attrs.get('shape', dataset.metadata.shape)
+            # none of the above appear to work in any dataset tested, but could be useful for
+            # future AnnData datasets
+            dataset.metadata.layers_count = len(anndata_file)
+            dataset.metadata.layers_names = list(anndata_file.keys())
 
+            def _layercountsize(tmp, lennames=0):
+                "From TMP and LENNAMES, return layers, their number, and the length of one of the layers (all equal)."
+                if hasattr(tmp, 'dtype'):
+                    layers = list(tmp.dtype.names)
+                    count = len(tmp.dtype)
+                    size = int(tmp.size)
+                else:
+                    layers = list(tmp.keys())
+                    count = len(layers)
+                    size = lennames
+                return (layers, count, size)
+
+            if 'obs' in dataset.metadata.layers_names:
+                tmp = anndata_file["obs"]
+                obs_index = None
+                if "index" in tmp:
+                    obs_index = "index"
+                elif "_index" in tmp:
+                    obs_index = "_index"
+                # Determine cell labels
+                if obs_index:
+                    dataset.metadata.obs_names = list(tmp[obs_index])
+                elif hasattr(tmp, 'dtype'):
+                    if "index" in tmp.dtype.names:
+                        # Yes, we call tmp["index"], and not tmp.dtype["index"]
+                        # here, despite the above tests.
+                        dataset.metadata.obs_names = list(tmp["index"])
+                    elif "_index" in tmp.dtype.names:
+                        dataset.metadata.obs_names = list(tmp["_index"])
+                    else:
+                        log.warning("Could not determine cell labels for %s", self)
+                else:
+                    log.warning("Could not determine observation index for %s", self)
+
+                x, y, z = _layercountsize(tmp, len(dataset.metadata.obs_names))
+                dataset.metadata.obs_layers = x
+                dataset.metadata.obs_count = y
+                dataset.metadata.obs_size = z
+
+            if 'obsm' in dataset.metadata.layers_names:
+                tmp = anndata_file["obsm"]
+                dataset.metadata.obsm_layers, dataset.metadata.obsm_count, _ = _layercountsize(tmp)
+
+            if 'raw.var' in dataset.metadata.layers_names:
+                tmp = anndata_file["raw.var"]
+                # full set of genes would never need to be previewed
+                # dataset.metadata.raw_var_names = tmp["index"]
+                x, y, z = _layercountsize(tmp, len(tmp["index"]))
+                dataset.metadata.raw_var_layers = x
+                dataset.metadata.raw_var_count = y
+                dataset.metadata.raw_var_size = z
+
+            if 'var' in dataset.metadata.layers_names:
+                tmp = anndata_file["var"]
+                var_index = None
+                if "index" in tmp:
+                    var_index = "index"
+                elif "_index" in tmp:
+                    var_index = "_index"
+                # We never use var_names
+                # dataset.metadata.var_names = tmp[var_index]
+                if var_index:
+                    x, y, z = _layercountsize(tmp, len(tmp[var_index]))
+                else:
+                    # failing to detect a var_index is not an indicator
+                    # that the dataset is empty
+                    x, y, z = _layercountsize(tmp)
+
+                dataset.metadata.var_layers = x
+                dataset.metadata.var_count = y
+                dataset.metadata.var_size = z
+
+            if 'varm' in dataset.metadata.layers_names:
+                tmp = anndata_file["varm"]
+                dataset.metadata.varm_layers, dataset.metadata.varm_count, _ = _layercountsize(tmp)
+
+            if 'uns' in dataset.metadata.layers_names:
+                tmp = anndata_file["uns"]
+                dataset.metadata.uns_layers, dataset.metadata.uns_count, _ = _layercountsize(tmp)
+
+            # Resolving the problematic shape parameter
+            if 'X' in dataset.metadata.layers_names:
+                # Shape we determine here due to the non-standard representation of 'X' dimensions
+                shape = anndata_file['X'].attrs.get("shape")
+                if shape is not None:
+                    dataset.metadata.shape = tuple(shape)
+                elif hasattr(anndata_file['X'], 'shape'):
+                    dataset.metadata.shape = tuple(anndata_file['X'].shape)
+
+            if dataset.metadata.shape is None:
+                dataset.metadata.shape = (int(dataset.metadata.obs_size), int(dataset.metadata.var_size))
+
+    def set_peek(self, dataset, is_multi_byte=False):
+        if not dataset.dataset.purged:
+            tmp = dataset.metadata
+
+            def _makelayerstrings(layer, count, names):
+                "Format the layers."
+                if layer in tmp.layers_names:
+                    return "\n[%s]: %d %s\n    %s" % (
+                        layer,
+                        count,
+                        "layer" if count == 1 else "layers",
+                        ', '.join(sorted(names))
+                    )
+                return ""
+
+            peekstr = "[n_obs x n_vars]\n    %d x %d" % tuple(tmp.shape)
+            peekstr += _makelayerstrings("obs", tmp.obs_count, tmp.obs_layers)
+            peekstr += _makelayerstrings("var", tmp.var_count, tmp.var_layers)
+            peekstr += _makelayerstrings("obsm", tmp.obsm_count, tmp.obsm_layers)
+            peekstr += _makelayerstrings("varm", tmp.varm_count, tmp.varm_layers)
+            peekstr += _makelayerstrings("uns", tmp.uns_count, tmp.uns_layers)
+
+            dataset.peek = peekstr
+            dataset.blurb = "Anndata file (%s)" % nice_size(dataset.get_size())
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek(self, dataset):
+        try:
+            return dataset.peek
+        except Exception:
+            return "Binary Anndata file (%s)" % (nice_size(dataset.get_size()))
+
+
+@build_sniff_from_prefix
 class GmxBinary(Binary):
     """
     Base class for GROMACS binary files - xtc, trr, cpt
     """
 
-    magic_number = None  # variables to be overwritten in the child class
+    magic_number: Optional[int] = None  # variables to be overwritten in the child class
     file_ext = ""
 
-    def sniff(self, filename):
+    def sniff_prefix(self, sniff_prefix):
         # The first 4 bytes of any GROMACS binary file containing the magic number
-        try:
-            header = open(filename, 'rb').read(struct.calcsize('>1i'))
-            if struct.unpack('>1i', header)[0] == self.magic_number:
-                return True
-            return False
-        except Exception:
-            return False
+        return sniff_prefix.magic_header('>1i') == self.magic_number
 
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
@@ -940,7 +1162,7 @@ class GmxBinary(Binary):
         try:
             return dataset.peek
         except Exception:
-            return "Binary GROMACS %s trajectory file (%s)" % (self.file_ext, nice_size(dataset.get_size()))
+            return "Binary GROMACS {} trajectory file ({})".format(self.file_ext, nice_size(dataset.get_size()))
 
 
 class Trr(GmxBinary):
@@ -957,7 +1179,7 @@ class Trr(GmxBinary):
     """
 
     file_ext = "trr"
-    magic_number = 1993  # magic number reference: https://github.com/gromacs/gromacs/blob/1c6639f0636d2ffc3d665686756d77227c8ae6d1/src/gromacs/fileio/trrio.cpp
+    magic_number = 1993  # magic number reference: https://github.com/gromacs/gromacs/blob/cec211b2c835ba6e8ea849fb1bf67d7fc19693a4/src/gromacs/fileio/trrio.cpp
 
 
 class Cpt(GmxBinary):
@@ -994,6 +1216,23 @@ class Xtc(GmxBinary):
     magic_number = 1995  # reference: https://github.com/gromacs/gromacs/blob/cec211b2c835ba6e8ea849fb1bf67d7fc19693a4/src/gromacs/fileio/xtcio.cpp
 
 
+class Edr(GmxBinary):
+    """
+    Class describing an edr file from the GROMACS suite
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('md.edr')
+    >>> Edr().sniff(fname)
+    True
+    >>> fname = get_test_fname('md.trr')
+    >>> Edr().sniff(fname)
+    False
+    """
+
+    file_ext = "edr"
+    magic_number = -55555  # reference: https://github.com/gromacs/gromacs/blob/cec211b2c835ba6e8ea849fb1bf67d7fc19693a4/src/gromacs/fileio/enxio.cpp
+
+
 class Biom2(H5):
     """
     Class describing a biom2 file (http://biom-format.org/documentation/biom_format.html)
@@ -1024,14 +1263,14 @@ class Biom2(H5):
         >>> Biom2().sniff(fname)
         False
         """
-        if super(Biom2, self).sniff(filename):
+        if super().sniff(filename):
             with h5py.File(filename, 'r') as f:
                 required_fields = {'id', 'format-url', 'type', 'generated-by', 'creation-date', 'nnz', 'shape'}
                 return required_fields.issubset(f.attrs.keys())
         return False
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(Biom2, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             with h5py.File(dataset.file_name, 'r') as f:
                 attributes = f.attrs
@@ -1043,7 +1282,7 @@ class Biom2(H5):
                 elif 'format' in attributes:  # biom 2.0
                     dataset.metadata.format = util.unicodify(attributes['format'])
                 dataset.metadata.type = util.unicodify(attributes['type'])
-                dataset.metadata.shape = tuple((int(_) for _ in attributes['shape']))
+                dataset.metadata.shape = tuple(int(_) for _ in attributes['shape'])
                 dataset.metadata.generated_by = util.unicodify(attributes['generated-by'])
                 dataset.metadata.creation_date = util.unicodify(attributes['creation-date'])
                 dataset.metadata.nnz = int(attributes['nnz'])
@@ -1056,7 +1295,7 @@ class Biom2(H5):
             try:
                 with h5py.File(dataset.file_name) as f:
                     for k, v in f.attrs.items():
-                        lines.append('%s:  %s' % (k, util.unicodify(v)))
+                        lines.append('{}:  {}'.format(k, util.unicodify(v)))
             except Exception as e:
                 log.warning('%s, set_peek Exception: %s', self, util.unicodify(e))
             dataset.peek = '\n'.join(lines)
@@ -1099,11 +1338,11 @@ class Cool(H5):
         MAGIC = "HDF5::Cooler"
         URL = "https://github.com/mirnylab/cooler"
 
-        if super(Cool, self).sniff(filename):
+        if super().sniff(filename):
             keys = ['chroms', 'bins', 'pixels', 'indexes']
             with h5py.File(filename, 'r') as handle:
-                fmt = handle.attrs.get('format')
-                url = handle.attrs.get('format-url')
+                fmt = util.unicodify(handle.attrs.get('format'))
+                url = util.unicodify(handle.attrs.get('format-url'))
                 if fmt == MAGIC or url == URL:
                     if not all(name in handle.keys() for name in keys):
                         return False
@@ -1155,15 +1394,15 @@ class MCool(H5):
         MAGIC = "HDF5::Cooler"
         URL = "https://github.com/mirnylab/cooler"
 
-        if super(MCool, self).sniff(filename):
+        if super().sniff(filename):
             keys0 = ['resolutions']
             with h5py.File(filename, 'r') as handle:
                 if not all(name in handle.keys() for name in keys0):
                     return False
-                res0 = list(handle['resolutions'].keys())[0]
+                res0 = next(iter(handle['resolutions'].keys()))
                 keys = ['chroms', 'bins', 'pixels', 'indexes']
-                fmt = handle['resolutions'][res0].attrs.get('format')
-                url = handle['resolutions'][res0].attrs.get('format-url')
+                fmt = util.unicodify(handle['resolutions'][res0].attrs.get('format'))
+                url = util.unicodify(handle['resolutions'][res0].attrs.get('format-url'))
                 if fmt == MAGIC or url == URL:
                     if not all(name in handle['resolutions'][res0].keys() for name in keys):
                         return False
@@ -1206,22 +1445,17 @@ class Scf(Binary):
             return "Binary scf sequence file (%s)" % (nice_size(dataset.get_size()))
 
 
+@build_sniff_from_prefix
 class Sff(Binary):
     """ Standard Flowgram Format (SFF) """
     edam_format = "format_3284"
     edam_data = "data_0924"
     file_ext = "sff"
 
-    def sniff(self, filename):
+    def sniff_prefix(self, sniff_prefix):
         # The first 4 bytes of any sff file is '.sff', and the file is binary. For details
         # about the format, see http://www.ncbi.nlm.nih.gov/Traces/trace.cgi?cmd=show&f=formats&m=doc&s=format
-        try:
-            header = open(filename, 'rb').read(4)
-            if header == b'.sff':
-                return True
-            return False
-        except Exception:
-            return False
+        return sniff_prefix.startswith_bytes(b'.sff')
 
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
@@ -1238,6 +1472,7 @@ class Sff(Binary):
             return "Binary sff file (%s)" % (nice_size(dataset.get_size()))
 
 
+@build_sniff_from_prefix
 class BigWig(Binary):
     """
     Accessing binary BigWig files from UCSC.
@@ -1251,19 +1486,12 @@ class BigWig(Binary):
     data_sources = {"data_standalone": "bigwig"}
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic = 0x888FFC26
         self._name = "BigWig"
 
-    def _unpack(self, pattern, handle):
-        return struct.unpack(pattern, handle.read(struct.calcsize(pattern)))
-
-    def sniff(self, filename):
-        try:
-            magic = self._unpack("I", open(filename, 'rb'))
-            return magic[0] == self._magic
-        except Exception:
-            return False
+    def sniff_prefix(self, sniff_prefix):
+        return sniff_prefix.magic_header("I") == self._magic
 
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
@@ -1277,7 +1505,7 @@ class BigWig(Binary):
         try:
             return dataset.peek
         except Exception:
-            return "Binary UCSC %s file (%s)" % (self._name, nice_size(dataset.get_size()))
+            return "Binary UCSC {} file ({})".format(self._name, nice_size(dataset.get_size()))
 
 
 class BigBed(BigWig):
@@ -1293,30 +1521,23 @@ class BigBed(BigWig):
         self._name = "BigBed"
 
 
+@build_sniff_from_prefix
 class TwoBit(Binary):
     """Class describing a TwoBit format nucleotide file"""
     edam_format = "format_3009"
     edam_data = "data_0848"
     file_ext = "twobit"
 
-    def sniff(self, filename):
-        try:
-            # All twobit files start with a 16-byte header. If the file is smaller than 16 bytes, it's obviously not a valid twobit file.
-            if os.path.getsize(filename) < 16:
-                return False
-            header = open(filename, 'rb').read(TWOBIT_MAGIC_SIZE)
-            magic = struct.unpack(">L", header)[0]
-            if magic == TWOBIT_MAGIC_NUMBER or magic == TWOBIT_MAGIC_NUMBER_SWAP:
-                return True
-        except IOError:
-            return False
+    def sniff_prefix(self, sniff_prefix):
+        magic = sniff_prefix.magic_header(">L")
+        return magic == TWOBIT_MAGIC_NUMBER or magic == TWOBIT_MAGIC_NUMBER_SWAP
 
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
             dataset.peek = "Binary TwoBit format nucleotide file"
             dataset.blurb = nice_size(dataset.get_size())
         else:
-            return super(TwoBit, self).set_peek(dataset)
+            return super().set_peek(dataset)
 
     def display_peek(self, dataset):
         try:
@@ -1378,6 +1599,22 @@ class SQlite(Binary):
         except Exception:
             return False
 
+    def sniff_table_names(self, filename, table_names):
+        # All table names should be in the schema
+        try:
+            conn = sqlite.connect(filename)
+            c = conn.cursor()
+            tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            result = c.execute(tables_query).fetchall()
+            result = [_[0] for _ in result]
+            for table_name in table_names:
+                if table_name not in result:
+                    return False
+            return True
+        except Exception as e:
+            log.warning('%s, sniff Exception: %s', self, e)
+        return False
+
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
             dataset.peek = "SQLite Database"
@@ -1385,7 +1622,7 @@ class SQlite(Binary):
             if dataset.metadata.tables:
                 for table in dataset.metadata.tables:
                     try:
-                        lines.append('%s [%s]' % (table, dataset.metadata.table_row_count[table]))
+                        lines.append('{} [{}]'.format(table, dataset.metadata.table_row_count[table]))
                     except Exception:
                         continue
             dataset.peek = '\n'.join(lines)
@@ -1425,7 +1662,7 @@ class GeminiSQLite(SQlite):
     edam_data = "data_3498"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(GeminiSQLite, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             conn = sqlite.connect(dataset.file_name)
             c = conn.cursor()
@@ -1438,21 +1675,10 @@ class GeminiSQLite(SQlite):
             log.warning('%s, set_meta Exception: %s', self, e)
 
     def sniff(self, filename):
-        if super(GeminiSQLite, self).sniff(filename):
-            gemini_table_names = ["gene_detailed", "gene_summary", "resources", "sample_genotype_counts", "sample_genotypes", "samples",
-                                  "variant_impacts", "variants", "version"]
-            try:
-                conn = sqlite.connect(filename)
-                c = conn.cursor()
-                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                result = c.execute(tables_query).fetchall()
-                result = [_[0] for _ in result]
-                for table_name in gemini_table_names:
-                    if table_name not in result:
-                        return False
-                return True
-            except Exception as e:
-                log.warning('%s, sniff Exception: %s', self, e)
+        if super().sniff(filename):
+            table_names = ["gene_detailed", "gene_summary", "resources", "sample_genotype_counts",
+                           "sample_genotypes", "samples", "variant_impacts", "variants", "version"]
+            return self.sniff_table_names(filename, table_names)
         return False
 
     def set_peek(self, dataset, is_multi_byte=False):
@@ -1470,6 +1696,19 @@ class GeminiSQLite(SQlite):
             return "Gemini SQLite Database, version %s" % (dataset.metadata.gemini_version or 'unknown')
 
 
+class ChiraSQLite(SQlite):
+    """Class describing a ChiRAViz Sqlite database """
+    file_ext = "chira.sqlite"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+
+    def sniff(self, filename):
+        if super().sniff(filename):
+            self.sniff_table_names(filename, ['Chimeras'])
+        return False
+
+
 class CuffDiffSQlite(SQlite):
     """Class describing a CuffDiff SQLite database """
     MetadataElement(name="cuffdiff_version", default='2.2.1', param=MetadataParameter, desc="CuffDiff Version",
@@ -1483,7 +1722,7 @@ class CuffDiffSQlite(SQlite):
     edam_format = "format_3621"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(CuffDiffSQlite, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             genes = []
             samples = []
@@ -1498,7 +1737,7 @@ class CuffDiffSQlite(SQlite):
             for gene_id, gene_name in result:
                 if gene_name is None:
                     continue
-                gene = '%s: %s' % (gene_id, gene_name)
+                gene = f'{gene_id}: {gene_name}'
                 if gene not in genes:
                     genes.append(gene)
             samples_query = 'SELECT DISTINCT(sample_name) as sample_name FROM samples ORDER BY sample_name'
@@ -1512,22 +1751,10 @@ class CuffDiffSQlite(SQlite):
             log.warning('%s, set_meta Exception: %s', self, e)
 
     def sniff(self, filename):
-        if super(CuffDiffSQlite, self).sniff(filename):
+        if super().sniff(filename):
             # These tables should be in any CuffDiff SQLite output.
-            cuffdiff_table_names = ['CDS', 'genes', 'isoforms', 'replicates',
-                                    'runInfo', 'samples', 'TSS']
-            try:
-                conn = sqlite.connect(filename)
-                c = conn.cursor()
-                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                result = c.execute(tables_query).fetchall()
-                result = [_[0] for _ in result]
-                for table_name in cuffdiff_table_names:
-                    if table_name not in result:
-                        return False
-                return True
-            except Exception as e:
-                log.warning('%s, sniff Exception: %s', self, e)
+            table_names = ['CDS', 'genes', 'isoforms', 'replicates', 'runInfo', 'samples', 'TSS']
+            return self.sniff_table_names(filename, table_names)
         return False
 
     def set_peek(self, dataset, is_multi_byte=False):
@@ -1542,7 +1769,7 @@ class CuffDiffSQlite(SQlite):
         try:
             return dataset.peek
         except Exception:
-            return "CuffDiff SQLite Database, version %s" % (dataset.metadata.gemini_version or 'unknown')
+            return "CuffDiff SQLite Database, version %s" % (dataset.metadata.cuffdiff_version or 'unknown')
 
 
 class MzSQlite(SQlite):
@@ -1550,23 +1777,98 @@ class MzSQlite(SQlite):
     file_ext = "mz.sqlite"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(MzSQlite, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
 
     def sniff(self, filename):
-        if super(MzSQlite, self).sniff(filename):
-            mz_table_names = ["DBSequence", "Modification", "Peaks", "Peptide", "PeptideEvidence", "Score", "SearchDatabase", "Source", "SpectraData", "Spectrum", "SpectrumIdentification"]
-            try:
-                conn = sqlite.connect(filename)
-                c = conn.cursor()
-                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                result = c.execute(tables_query).fetchall()
-                result = [_[0] for _ in result]
-                for table_name in mz_table_names:
-                    if table_name not in result:
-                        return False
-                return True
-            except Exception as e:
-                log.warning('%s, sniff Exception: %s', self, e)
+        if super().sniff(filename):
+            table_names = ["DBSequence", "Modification", "Peaks", "Peptide", "PeptideEvidence",
+                           "Score", "SearchDatabase", "Source", "SpectraData", "Spectrum", "SpectrumIdentification"]
+            return self.sniff_table_names(filename, table_names)
+        return False
+
+
+class PQP(SQlite):
+    """
+    Class describing a Peptide query parameters file
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('test.pqp')
+    >>> PQP().sniff(fname)
+    True
+    >>> fname = get_test_fname('test.osw')
+    >>> PQP().sniff(fname)
+    False
+    """
+    file_ext = "pqp"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+
+    def sniff(self, filename):
+        """
+        table definition according to https://github.com/grosenberger/OpenMS/blob/develop/src/openms/source/ANALYSIS/OPENSWATH/TransitionPQPFile.cpp#L264
+        for now VERSION GENE PEPTIDE_GENE_MAPPING are excluded, since
+        there is test data wo these tables, see also here https://github.com/OpenMS/OpenMS/issues/4365
+        """
+        if not super().sniff(filename):
+            return False
+        table_names = ['COMPOUND', 'PEPTIDE', 'PEPTIDE_PROTEIN_MAPPING', 'PRECURSOR',
+                       'PRECURSOR_COMPOUND_MAPPING', 'PRECURSOR_PEPTIDE_MAPPING', 'PROTEIN',
+                       'TRANSITION', 'TRANSITION_PEPTIDE_MAPPING', 'TRANSITION_PRECURSOR_MAPPING']
+        osw_table_names = ['FEATURE', 'FEATURE_MS1', 'FEATURE_MS2', 'FEATURE_TRANSITION', 'RUN']
+        return self.sniff_table_names(filename, table_names) and not self.sniff_table_names(filename, osw_table_names)
+
+
+class OSW(SQlite):
+    """
+    Class describing OpenSwath output
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('test.osw')
+    >>> OSW().sniff(fname)
+    True
+    >>> fname = get_test_fname('test.sqmass')
+    >>> OSW().sniff(fname)
+    False
+    """
+    file_ext = "osw"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+
+    def sniff(self, filename):
+        # osw seems to be an extension of pqp (few tables are added)
+        # see also here https://github.com/OpenMS/OpenMS/issues/4365
+        if not super().sniff(filename):
+            return False
+        table_names = ['COMPOUND', 'PEPTIDE', 'PEPTIDE_PROTEIN_MAPPING', 'PRECURSOR',
+                       'PRECURSOR_COMPOUND_MAPPING', 'PRECURSOR_PEPTIDE_MAPPING', 'PROTEIN',
+                       'TRANSITION', 'TRANSITION_PEPTIDE_MAPPING', 'TRANSITION_PRECURSOR_MAPPING',
+                       'FEATURE', 'FEATURE_MS1', 'FEATURE_MS2', 'FEATURE_TRANSITION', 'RUN']
+        return self.sniff_table_names(filename, table_names)
+
+
+class SQmass(SQlite):
+    """
+    Class describing a Sqmass database
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('test.sqmass')
+    >>> SQmass().sniff(fname)
+    True
+    >>> fname = get_test_fname('test.pqp')
+    >>> SQmass().sniff(fname)
+    False
+    """
+    file_ext = "sqmass"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+
+    def sniff(self, filename):
+        if super().sniff(filename):
+            table_names = ["CHROMATOGRAM", "PRECURSOR", "RUN", "SPECTRUM", "DATA", "PRODUCT", "RUN_EXTRA"]
+            return self.sniff_table_names(filename, table_names)
         return False
 
 
@@ -1577,31 +1879,102 @@ class BlibSQlite(SQlite):
     file_ext = "blib"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(BlibSQlite, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             conn = sqlite.connect(dataset.file_name)
             c = conn.cursor()
             tables_query = "SELECT majorVersion,minorVersion FROM LibInfo"
             (majorVersion, minorVersion) = c.execute(tables_query).fetchall()[0]
-            dataset.metadata.blib_version = '%s.%s' % (majorVersion, minorVersion)
+            dataset.metadata.blib_version = f'{majorVersion}.{minorVersion}'
         except Exception as e:
             log.warning('%s, set_meta Exception: %s', self, e)
 
     def sniff(self, filename):
-        if super(BlibSQlite, self).sniff(filename):
-            blib_table_names = ['IonMobilityTypes', 'LibInfo', 'Modifications', 'RefSpectra', 'RefSpectraPeakAnnotations', 'RefSpectraPeaks', 'ScoreTypes', 'SpectrumSourceFiles']
-            try:
-                conn = sqlite.connect(filename)
-                c = conn.cursor()
-                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                result = c.execute(tables_query).fetchall()
-                result = [_[0] for _ in result]
-                for table_name in blib_table_names:
-                    if table_name not in result:
-                        return False
-                return True
-            except Exception as e:
-                log.warning('%s, sniff Exception: %s', self, e)
+        if super().sniff(filename):
+            table_names = ['IonMobilityTypes', 'LibInfo', 'Modifications', 'RefSpectra',
+                           'RefSpectraPeakAnnotations', 'RefSpectraPeaks', 'ScoreTypes', 'SpectrumSourceFiles']
+            return self.sniff_table_names(filename, table_names)
+        return False
+
+
+class DlibSQlite(SQlite):
+    """
+    Class describing a Proteomics Spectral Library Sqlite database
+    DLIBs only have the "entries", "metadata", and "peptidetoprotein" tables populated.
+    ELIBs have the rest of the tables populated too, such as "peptidequants" or "peptidescores".
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('test.dlib')
+    >>> DlibSQlite().sniff(fname)
+    True
+    >>> fname = get_test_fname('interval.interval')
+    >>> DlibSQlite().sniff(fname)
+    False
+    """
+    MetadataElement(name="dlib_version", default='1.8', param=MetadataParameter, desc="Dlib Version",
+                    readonly=True, visible=True, no_value='1.8')
+    file_ext = "dlib"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+        try:
+            conn = sqlite.connect(dataset.file_name)
+            c = conn.cursor()
+            tables_query = "SELECT Value FROM metadata WHERE Key = 'version'"
+            version = c.execute(tables_query).fetchall()[0]
+            dataset.metadata.dlib_version = '%s' % (version)
+        except Exception as e:
+            log.warning('%s, set_meta Exception: %s', self, e)
+
+    def sniff(self, filename):
+        if super().sniff(filename):
+            table_names = ['entries', 'metadata', 'peptidetoprotein']
+            return self.sniff_table_names(filename, table_names)
+        return False
+
+
+class ElibSQlite(SQlite):
+    """
+    Class describing a Proteomics Chromatagram Library Sqlite database
+    DLIBs only have the "entries", "metadata", and "peptidetoprotein" tables populated.
+    ELIBs have the rest of the tables populated too, such as "peptidequants" or "peptidescores".
+
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('test.elib')
+    >>> ElibSQlite().sniff(fname)
+    True
+    >>> fname = get_test_fname('test.dlib')
+    >>> ElibSQlite().sniff(fname)
+    False
+    """
+    MetadataElement(name="version", default='0.1.14', param=MetadataParameter, desc="Elib Version",
+                    readonly=True, visible=True, no_value='0.1.14')
+    file_ext = "elib"
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+        try:
+            conn = sqlite.connect(dataset.file_name)
+            c = conn.cursor()
+            tables_query = "SELECT Value FROM metadata WHERE Key = 'version'"
+            version = c.execute(tables_query).fetchall()[0]
+            dataset.metadata.dlib_version = '%s' % (version)
+        except Exception as e:
+            log.warning('%s, set_meta Exception: %s', self, e)
+
+    def sniff(self, filename):
+        if super().sniff(filename):
+            table_names = ['entries', 'fragmentquants', 'metadata', 'peptidelocalizations', 'peptidequants',
+                           'peptidescores', 'peptidetoprotein', 'proteinscores', 'retentiontimes']
+            if self.sniff_table_names(filename, table_names):
+                try:
+                    conn = sqlite.connect(filename)
+                    c = conn.cursor()
+                    row_query = "SELECT count(*) FROM peptidescores"
+                    count = c.execute(row_query).fetchone()[0]
+                    return int(count) > 0
+                except Exception as e:
+                    log.warning('%s, sniff Exception: %s', self, e)
         return False
 
 
@@ -1620,23 +1993,13 @@ class IdpDB(SQlite):
     file_ext = "idpdb"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(IdpDB, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
 
     def sniff(self, filename):
-        if super(IdpDB, self).sniff(filename):
-            mz_table_names = ["About", "Analysis", "AnalysisParameter", "PeptideSpectrumMatch", "Spectrum", "SpectrumSource"]
-            try:
-                conn = sqlite.connect(filename)
-                c = conn.cursor()
-                tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                result = c.execute(tables_query).fetchall()
-                result = [_[0] for _ in result]
-                for table_name in mz_table_names:
-                    if table_name not in result:
-                        return False
-                return True
-            except Exception as e:
-                log.warning('%s, sniff Exception: %s', self, e)
+        if super().sniff(filename):
+            table_names = ["About", "Analysis", "AnalysisParameter", "PeptideSpectrumMatch",
+                           "Spectrum", "SpectrumSource"]
+            return self.sniff_table_names(filename, table_names)
         return False
 
     def set_peek(self, dataset, is_multi_byte=False):
@@ -1661,7 +2024,7 @@ class GAFASQLite(SQlite):
     file_ext = 'gafa.sqlite'
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(GAFASQLite, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             conn = sqlite.connect(dataset.file_name)
             c = conn.cursor()
@@ -1676,15 +2039,64 @@ class GAFASQLite(SQlite):
             log.warning("%s, set_meta Exception: %s", self, e)
 
     def sniff(self, filename):
-        if super(GAFASQLite, self).sniff(filename):
-            gafa_table_names = frozenset(['gene', 'gene_family', 'gene_family_member', 'meta', 'transcript'])
-            conn = sqlite.connect(filename)
-            c = conn.cursor()
-            tables_query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            results = c.execute(tables_query).fetchall()
-            found_table_names = frozenset(_[0] for _ in results)
-            return gafa_table_names <= found_table_names
+        if super().sniff(filename):
+            table_names = frozenset({'gene', 'gene_family', 'gene_family_member', 'meta', 'transcript'})
+            return self.sniff_table_names(filename, table_names)
         return False
+
+
+class NcbiTaxonomySQlite(SQlite):
+    """Class describing the NCBI Taxonomy database stored in SQLite as done by rust-ncbitaxonomy"""
+    MetadataElement(name='ncbitaxonomy_schema_version', default='20200501095116', param=MetadataParameter, desc='ncbitaxonomy schema version',
+                    readonly=True, visible=True, no_value='20200501095116')
+    MetadataElement(name="taxon_count", default=[], param=MetadataParameter, desc="Count of taxa in the taxonomy",
+                    readonly=True, visible=True, no_value=[])
+
+    file_ext = 'ncbitaxonomy.sqlite'
+
+    def set_meta(self, dataset, overwrite=True, **kwd):
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
+        try:
+            conn = sqlite.connect(dataset.file_name)
+            c = conn.cursor()
+            version_query = 'SELECT version FROM __diesel_schema_migrations ORDER BY run_on DESC LIMIT 1'
+            results = c.execute(version_query).fetchall()
+            if len(results) == 0:
+                raise Exception('version not found in __diesel_schema_migrations table')
+            dataset.metadata.ncbitaxonomy_schema_version = results[0][0]
+            taxons_query = 'SELECT count(name) FROM taxonomy'
+            results = c.execute(taxons_query).fetchall()
+            if len(results) == 0:
+                raise Exception('could not count size of taxonomy table')
+            dataset.metadata.taxon_count = results[0][0]
+        except Exception as e:
+            log.warning("%s, set_meta Exception: %s", self, e)
+
+    def sniff(self, filename):
+        if super().sniff(filename):
+            table_names = frozenset({'__diesel_schema_migrations', 'taxonomy'})
+            return self.sniff_table_names(filename, table_names)
+        return False
+
+    def set_peek(self, dataset, is_multi_byte=False):
+        if not dataset.dataset.purged:
+            dataset.peek = "NCBI Taxonomy SQLite Database, version {} ({} taxons)".format(
+                getattr(dataset.metadata, "ncbitaxonomy_schema_version", "unknown"),
+                getattr(dataset.metadata, "taxon_count", "unknown")
+            )
+            dataset.blurb = nice_size(dataset.get_size())
+        else:
+            dataset.peek = 'file does not exist'
+            dataset.blurb = 'file purged from disk'
+
+    def display_peek(self, dataset):
+        try:
+            return dataset.peek
+        except Exception:
+            return "NCBI Taxonomy SQLite Database, version {} ({} taxons)".format(
+                getattr(dataset.metadata, "ncbitaxonomy_schema_version", "unknown"),
+                getattr(dataset.metadata, "taxon_count", "unknown")
+            )
 
 
 class Xlsx(Binary):
@@ -1732,22 +2144,16 @@ class ExcelXls(Binary):
             return "Microsoft Excel XLS file (%s)" % (data.nice_size(dataset.get_size()))
 
 
+@build_sniff_from_prefix
 class Sra(Binary):
     """ Sequence Read Archive (SRA) datatype originally from mdshw5/sra-tools-galaxy"""
     file_ext = 'sra'
 
-    def sniff(self, filename):
+    def sniff_prefix(self, sniff_prefix):
         """ The first 8 bytes of any NCBI sra file is 'NCBI.sra', and the file is binary.
         For details about the format, see http://www.ncbi.nlm.nih.gov/books/n/helpsra/SRA_Overview_BK/#SRA_Overview_BK.4_SRA_Data_Structure
         """
-        try:
-            header = open(filename, 'rb').read(8)
-            if header == b'NCBI.sra':
-                return True
-            else:
-                return False
-        except Exception:
-            return False
+        return sniff_prefix.startswith_bytes(b'NCBI.sra')
 
     def set_peek(self, dataset, is_multi_byte=False):
         if not dataset.dataset.purged:
@@ -1795,7 +2201,7 @@ class OxliBinary(Binary):
                     if binascii.hexlify(ftype) == oxlitype:
                         return True
             return False
-        except IOError:
+        except OSError:
             return False
 
 
@@ -1966,7 +2372,7 @@ class PostgresqlArchive(CompressedArchive):
     file_ext = "postgresql"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(PostgresqlArchive, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             if dataset and tarfile.is_tarfile(dataset.file_name):
                 with tarfile.open(dataset.file_name, 'r') as temptar:
@@ -2010,7 +2416,7 @@ class Fast5Archive(CompressedArchive):
     file_ext = "fast5.tar"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(Fast5Archive, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             if dataset and tarfile.is_tarfile(dataset.file_name):
                 with tarfile.open(dataset.file_name, 'r') as temptar:
@@ -2105,13 +2511,13 @@ class SearchGuiArchive(CompressedArchive):
     file_ext = "searchgui_archive"
 
     def set_meta(self, dataset, overwrite=True, **kwd):
-        super(SearchGuiArchive, self).set_meta(dataset, overwrite=overwrite, **kwd)
+        super().set_meta(dataset, overwrite=overwrite, **kwd)
         try:
             if dataset and zipfile.is_zipfile(dataset.file_name):
                 with zipfile.ZipFile(dataset.file_name) as tempzip:
                     if 'searchgui.properties' in tempzip.namelist():
                         with tempzip.open('searchgui.properties') as fh:
-                            for line in fh:
+                            for line in io.TextIOWrapper(fh):
                                 if line.startswith('searchgui.version'):
                                     version = line.split('=')[1].strip()
                                     dataset.metadata.searchgui_version = version
@@ -2144,6 +2550,7 @@ class SearchGuiArchive(CompressedArchive):
             return "SearchGUI Archive, version %s" % (dataset.metadata.searchgui_version or 'unknown')
 
 
+@build_sniff_from_prefix
 class NetCDF(Binary):
     """Binary data in netCDF format"""
     file_ext = "netcdf"
@@ -2164,15 +2571,8 @@ class NetCDF(Binary):
         except Exception:
             return "Binary netCDF file (%s)" % (nice_size(dataset.get_size()))
 
-    def sniff(self, filename):
-        try:
-            with open(filename, 'rb') as f:
-                header = f.read(3)
-            if header == b'CDF':
-                return True
-            return False
-        except Exception:
-            return False
+    def sniff_prefix(self, sniff_prefix):
+        return sniff_prefix.startswith_bytes(b'CDF')
 
 
 class Dcd(Binary):
@@ -2191,7 +2591,7 @@ class Dcd(Binary):
     edam_data = "data_3842"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic_number = b'CORD'
 
     def sniff(self, filename):
@@ -2242,7 +2642,7 @@ class Vel(Binary):
     file_ext = "vel"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic_number = b'VELD'
 
     def sniff(self, filename):
@@ -2278,6 +2678,7 @@ class Vel(Binary):
             return "Binary CHARMM velocity file (%s)" % (nice_size(dataset.get_size()))
 
 
+@build_sniff_from_prefix
 class DAA(Binary):
     """
     Class describing an DAA (diamond alignment archive) file
@@ -2292,15 +2693,15 @@ class DAA(Binary):
     file_ext = "daa"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic = binascii.unhexlify("6be33e6d47530e3c")
 
-    def sniff(self, filename):
+    def sniff_prefix(self, sniff_prefix):
         # The first 8 bytes of any daa file are 0x3c0e53476d3ee36b
-        with open(filename, 'rb') as f:
-            return f.read(8) == self._magic
+        return sniff_prefix.startswith_bytes(self._magic)
 
 
+@build_sniff_from_prefix
 class RMA6(Binary):
     """
     Class describing an RMA6 (MEGAN6 read-match archive) file
@@ -2315,15 +2716,14 @@ class RMA6(Binary):
     file_ext = "rma6"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic = binascii.unhexlify("000003f600000006")
 
-    def sniff(self, filename):
-        # The first 8 bytes of any daa file are 0x3c0e53476d3ee36b
-        with open(filename, 'rb') as f:
-            return f.read(8) == self._magic
+    def sniff_prefix(self, sniff_prefix):
+        return sniff_prefix.startswith_bytes(self._magic)
 
 
+@build_sniff_from_prefix
 class DMND(Binary):
     """
     Class describing an DMND file
@@ -2338,13 +2738,12 @@ class DMND(Binary):
     file_ext = "dmnd"
 
     def __init__(self, **kwd):
-        Binary.__init__(self, **kwd)
+        super().__init__(**kwd)
         self._magic = binascii.unhexlify("6d18ee15a4f84a02")
 
-    def sniff(self, filename):
+    def sniff_prefix(self, sniff_prefix):
         # The first 8 bytes of any dmnd file are 0x24af8a415ee186d
-        with open(filename, 'rb') as f:
-            return f.read(8) == self._magic
+        return sniff_prefix.startswith_bytes(self._magic)
 
 
 class ICM(Binary):
@@ -2368,6 +2767,28 @@ class ICM(Binary):
             return True
 
         return False
+
+
+@build_sniff_from_prefix
+class Parquet(Binary):
+    """
+    Class describing Apache Parquet file (https://parquet.apache.org/)
+    >>> from galaxy.datatypes.sniff import get_test_fname
+    >>> fname = get_test_fname('example.parquet')
+    >>> Parquet().sniff(fname)
+    True
+    >>> fname = get_test_fname('test.mz5')
+    >>> Parquet().sniff(fname)
+    False
+    """
+    file_ext = "parquet"
+
+    def __init__(self, **kwd):
+        super().__init__(**kwd)
+        self._magic = b"PAR1"  # Defined at https://parquet.apache.org/documentation/latest/
+
+    def sniff_prefix(self, sniff_prefix):
+        return sniff_prefix.startswith_bytes(self._magic)
 
 
 class BafTar(CompressedArchive):
@@ -2409,7 +2830,7 @@ class BafTar(CompressedArchive):
         try:
             return dataset.peek
         except Exception:
-            return "%s (%s)" % (self.get_type(), nice_size(dataset.get_size()))
+            return "{} ({})".format(self.get_type(), nice_size(dataset.get_size()))
 
 
 class YepTar(BafTar):

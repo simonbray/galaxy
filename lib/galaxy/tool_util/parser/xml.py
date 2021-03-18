@@ -1,15 +1,21 @@
+import json
 import logging
 import re
-import sys
-import traceback
 import uuid
-from collections import OrderedDict
 from math import isinf
 
 import packaging.version
 
 from galaxy.tool_util.deps import requirements
-from galaxy.util import string_as_bool, xml_text, xml_to_string
+from galaxy.tool_util.parser.util import (
+    DEFAULT_DELTA,
+    DEFAULT_DELTA_FRAC
+)
+from galaxy.util import (
+    string_as_bool,
+    xml_text,
+    xml_to_string
+)
 from .interface import (
     InputSource,
     PageSource,
@@ -48,6 +54,9 @@ class XmlToolSource(ToolSource):
         self._source_path = source_path
         self._macro_paths = macro_paths or []
         self.legacy_defaults = self.parse_profile() == "16.01"
+
+    def to_string(self):
+        return xml_to_string(self.root)
 
     def parse_version(self):
         return self.root.get("version", None)
@@ -138,9 +147,17 @@ class XmlToolSource(ToolSource):
 
         environment_variables = []
         for environment_variable_el in environment_variables_el.findall("environment_variable"):
+            template = environment_variable_el.text
+            inject = environment_variable_el.get("inject")
+            if inject:
+                assert not template, "Cannot specify inject and environment variable template."
+                assert inject in ["api_key"]
+            if template:
+                assert not inject, "Cannot specify inject and environment variable template."
             definition = {
                 "name": environment_variable_el.get("name"),
-                "template": environment_variable_el.text,
+                "template": template,
+                "inject": inject,
                 "strip": string_as_bool(environment_variable_el.get("strip", False)),
             }
             environment_variables.append(
@@ -161,13 +178,6 @@ class XmlToolSource(ToolSource):
         # in job_conf then do. This is a very conservative approach that shouldn't
         # break or modify any configurations by default.
         return "job_tmp_if_explicit"
-
-    def parse_docker_env_pass_through(self):
-        if self.parse_profile() < "18.01":
-            return ["GALAXY_SLOTS"]
-        else:
-            # Pass home, etc...
-            return super(XmlToolSource, self).parse_docker_env_pass_through()
 
     def parse_interpreter(self):
         interpreter = None
@@ -279,12 +289,12 @@ class XmlToolSource(ToolSource):
 
     def parse_outputs(self, tool):
         out_elem = self.root.find("outputs")
-        outputs = OrderedDict()
-        output_collections = OrderedDict()
+        outputs = {}
+        output_collections = {}
         if out_elem is None:
             return outputs, output_collections
 
-        data_dict = OrderedDict()
+        data_dict = {}
 
         def _parse(data_elem, **kwds):
             output_def = self._parse_output(data_elem, tool, **kwds)
@@ -387,7 +397,8 @@ class XmlToolSource(ToolSource):
         default_metadata_source="",
         expression_type=None,
     ):
-        output = ToolOutput(data_elem.get("name"))
+        from_expression = data_elem.get("from")
+        output = ToolOutput(data_elem.get("name"), from_expression=from_expression)
         output_format = data_elem.get("format", default_format)
         auto_format = string_as_bool(data_elem.get("auto_format", "false"))
         if auto_format and output_format != "data":
@@ -431,6 +442,7 @@ class XmlToolSource(ToolSource):
         parse error handling from command and stdio tag
 
         returns list of exit codes, list of regexes
+
         - exit_codes contain all non-zero exit codes (:-1 and 1:) if
           detect_errors is default (if not legacy), exit_code, or aggressive
         - the oom_exit_code if given and detect_errors is exit_code
@@ -439,6 +451,7 @@ class XmlToolSource(ToolSource):
           and exit codes derived from the properties of the command tag.
           thus more specific regexes of the same or more severe error level
           are triggered first.
+
         """
 
         command_el = self._command_el
@@ -473,19 +486,26 @@ class XmlToolSource(ToolSource):
 
     def parse_strict_shell(self):
         command_el = self._command_el
-        if command_el is not None:
-            return string_as_bool(command_el.get("strict", "False"))
-        elif self.legacy_defaults:
-            return False
+        if packaging.version.parse(self.parse_profile()) < packaging.version.parse('20.09'):
+            default = "False"
         else:
-            return True
+            default = "True"
+        if command_el is not None:
+            return string_as_bool(command_el.get("strict", default))
+        else:
+            return string_as_bool(default)
 
     def parse_help(self):
         help_elem = self.root.find('help')
         return help_elem.text if help_elem is not None else None
 
+    @property
     def macro_paths(self):
         return self._macro_paths
+
+    @property
+    def source_path(self):
+        return self._source_path
 
     def parse_tests_to_dict(self):
         tests_elem = self.root.find("tests")
@@ -496,7 +516,8 @@ class XmlToolSource(ToolSource):
 
         if tests_elem is not None:
             for i, test_elem in enumerate(tests_elem.findall("test")):
-                tests.append(_test_elem_to_dict(test_elem, i))
+                profile = self.parse_profile()
+                tests.append(_test_elem_to_dict(test_elem, i, profile))
 
         return rval
 
@@ -509,20 +530,43 @@ class XmlToolSource(ToolSource):
         # - Enable buggy interpreter attribute.
         return self.root.get("profile", "16.01")
 
+    def parse_license(self):
+        return self.root.get("license")
+
     def parse_python_template_version(self):
         python_template_version = self.root.get("python_template_version", None)
         if python_template_version is not None:
             python_template_version = packaging.version.parse(python_template_version)
         return python_template_version
 
+    def parse_creator(self):
+        creators_el = self.root.find("creator")
+        if creators_el is None:
+            return None
 
-def _test_elem_to_dict(test_elem, i):
+        creators = []
+        for creator_el in creators_el:
+            creator_as_dict = {}
+            if creator_el.tag == "person":
+                clazz = "Person"
+            elif creator_el.tag == "organization":
+                clazz = "Organization"
+            else:
+                continue
+            creator_as_dict["class"] = clazz
+            creator_as_dict.update(creator_el.attrib)
+            creators.append(creator_as_dict)
+        return creators
+
+
+def _test_elem_to_dict(test_elem, i, profile=None):
     rval = dict(
         outputs=__parse_output_elems(test_elem),
-        output_collections=__parse_output_collection_elems(test_elem),
+        output_collections=__parse_output_collection_elems(test_elem, profile=profile),
         inputs=__parse_input_elems(test_elem, i),
         expect_num_outputs=test_elem.get("expect_num_outputs"),
         command=__parse_assert_list_from_elem(test_elem.find("assert_command")),
+        command_version=__parse_assert_list_from_elem(test_elem.find("assert_command_version")),
         stdout=__parse_assert_list_from_elem(test_elem.find("assert_stdout")),
         stderr=__parse_assert_list_from_elem(test_elem.find("assert_stderr")),
         expect_exit_code=test_elem.get("expect_exit_code"),
@@ -561,35 +605,38 @@ def __parse_command_elem(test_elem):
     return __parse_assert_list_from_elem(assert_elem)
 
 
-def __parse_output_collection_elems(test_elem):
+def __parse_output_collection_elems(test_elem, profile=None):
     output_collections = []
     for output_collection_elem in test_elem.findall("output_collection"):
-        output_collection_def = __parse_output_collection_elem(output_collection_elem)
+        output_collection_def = __parse_output_collection_elem(output_collection_elem, profile=profile)
         output_collections.append(output_collection_def)
     return output_collections
 
 
-def __parse_output_collection_elem(output_collection_elem):
+def __parse_output_collection_elem(output_collection_elem, profile=None):
     attrib = dict(output_collection_elem.attrib)
     name = attrib.pop('name', None)
     if name is None:
         raise Exception("Test output collection does not have a 'name'")
-    element_tests = __parse_element_tests(output_collection_elem)
+    element_tests = __parse_element_tests(output_collection_elem, profile=profile)
     return TestCollectionOutputDef(name, attrib, element_tests).to_dict()
 
 
-def __parse_element_tests(parent_element):
+def __parse_element_tests(parent_element, profile=None):
     element_tests = {}
-    for element in parent_element.findall("element"):
+    for idx, element in enumerate(parent_element.findall("element")):
         element_attrib = dict(element.attrib)
         identifier = element_attrib.pop('name', None)
         if identifier is None:
             raise Exception("Test primary dataset does not have a 'identifier'")
-        element_tests[identifier] = __parse_test_attributes(element, element_attrib, parse_elements=True)
+        element_tests[identifier] = __parse_test_attributes(element, element_attrib, parse_elements=True, profile=profile)
+        if profile and profile >= "20.09":
+            element_tests[identifier][1]["expected_sort_order"] = idx
+
     return element_tests
 
 
-def __parse_test_attributes(output_elem, attrib, parse_elements=False, parse_discovered_datasets=False):
+def __parse_test_attributes(output_elem, attrib, parse_elements=False, parse_discovered_datasets=False, profile=None):
     assert_list = __parse_assert_list(output_elem)
 
     # Allow either file or value to specify a target file to compare result with
@@ -598,12 +645,17 @@ def __parse_test_attributes(output_elem, attrib, parse_elements=False, parse_dis
 
     # File no longer required if an list of assertions was present.
     attributes = {}
+
+    if 'value_json' in attrib:
+        attributes['object'] = json.loads(attrib.pop('value_json'))
+
     # Method of comparison
     attributes['compare'] = attrib.pop('compare', 'diff').lower()
     # Number of lines to allow to vary in logs (for dates, etc)
     attributes['lines_diff'] = int(attrib.pop('lines_diff', '0'))
     # Allow a file size to vary if sim_size compare
-    attributes['delta'] = int(attrib.pop('delta', '10000'))
+    attributes['delta'] = int(attrib.pop('delta', DEFAULT_DELTA))
+    attributes['delta_frac'] = float(attrib['delta_frac']) if 'delta_frac' in attrib else DEFAULT_DELTA_FRAC
     attributes['sort'] = string_as_bool(attrib.pop('sort', False))
     attributes['decompress'] = string_as_bool(attrib.pop('decompress', False))
     extra_files = []
@@ -618,7 +670,7 @@ def __parse_test_attributes(output_elem, attrib, parse_elements=False, parse_dis
     checksum = attrib.get("checksum", None)
     element_tests = {}
     if parse_elements:
-        element_tests = __parse_element_tests(output_elem)
+        element_tests = __parse_element_tests(output_elem, profile=profile)
 
     primary_datasets = {}
     if parse_discovered_datasets:
@@ -631,7 +683,8 @@ def __parse_test_attributes(output_elem, attrib, parse_elements=False, parse_dis
 
     has_checksum = md5sum or checksum
     has_nested_tests = extra_files or element_tests or primary_datasets
-    if not (assert_list or file or metadata or has_checksum or has_nested_tests):
+    has_object = 'object' in attributes
+    if not (assert_list or file or metadata or has_checksum or has_nested_tests or has_object):
         raise Exception("Test output defines nothing to check (e.g. must have a 'file' check against, assertions to check, metadata or checksum tests, etc...)")
     attributes['assert_list'] = assert_list
     attributes['extra_files'] = extra_files
@@ -701,21 +754,18 @@ def __expand_input_elems(root_elem, prefix=""):
         new_prefix = __prefix_join(prefix, name, index=index)
         __expand_input_elems(repeat_elem, new_prefix)
         __pull_up_params(root_elem, repeat_elem)
-        root_elem.remove(repeat_elem)
 
     cond_elems = root_elem.findall('conditional')
     for cond_elem in cond_elems:
         new_prefix = __prefix_join(prefix, cond_elem.get("name"))
         __expand_input_elems(cond_elem, new_prefix)
         __pull_up_params(root_elem, cond_elem)
-        root_elem.remove(cond_elem)
 
     section_elems = root_elem.findall('section')
     for section_elem in section_elems:
         new_prefix = __prefix_join(prefix, section_elem.get("name"))
         __expand_input_elems(section_elem, new_prefix)
         __pull_up_params(root_elem, section_elem)
-        root_elem.remove(section_elem)
 
 
 def __append_prefix_to_params(elem, prefix):
@@ -726,12 +776,11 @@ def __append_prefix_to_params(elem, prefix):
 def __pull_up_params(parent_elem, child_elem):
     for param_elem in child_elem.findall('param'):
         parent_elem.append(param_elem)
-        child_elem.remove(param_elem)
 
 
 def __prefix_join(prefix, name, index=None):
     name = name if index is None else "%s_%d" % (name, index)
-    return name if not prefix else "%s|%s" % (prefix, name)
+    return name if not prefix else f"{prefix}|{name}"
 
 
 def _copy_to_dict_if_present(elem, rval, attributes):
@@ -755,8 +804,11 @@ def __parse_param_elem(param_elem, i=0):
         value = attrib['values'].split(',')
     elif 'value' in attrib:
         value = attrib['value']
+    elif 'value_json' in attrib:
+        value = json.loads(attrib['value_json'])
     else:
         value = None
+
     children_elem = param_elem
     if children_elem is not None:
         # At this time, we can assume having children only
@@ -796,7 +848,7 @@ def __parse_param_elem(param_elem, i=0):
     }
 
 
-class StdioParser(object):
+class StdioParser:
 
     def __init__(self, root):
         try:
@@ -811,7 +863,7 @@ class StdioParser(object):
                 self.parse_stdio_exit_codes(stdio_elem)
                 self.parse_stdio_regexes(stdio_elem)
         except Exception:
-            log.error("Exception in parse_stdio! " + str(sys.exc_info()))
+            log.exception("Exception in parse_stdio!")
 
     def parse_stdio_exit_codes(self, stdio_elem):
         """
@@ -839,8 +891,7 @@ class StdioParser(object):
                 if code_range is None:
                     code_range = exit_code_elem.get("value", "")
                 if code_range is None:
-                    log.warning("Tool stdio exit codes must have " +
-                                "a range or value")
+                    log.warning("Tool stdio exit codes must have a range or value")
                     continue
                 # Parse the range. We look for:
                 #   :Y
@@ -881,18 +932,11 @@ class StdioParser(object):
                 # isn't bogus. If we have two infinite values, then
                 # the start must be -inf and the end must be +inf.
                 # So at least warn about this situation:
-                if (isinf(exit_code.range_start) and
-                        isinf(exit_code.range_end)):
-                    log.warning("Tool exit_code range %s will match on " +
-                                "all exit codes" % code_range)
+                if isinf(exit_code.range_start) and isinf(exit_code.range_end):
+                    log.warning("Tool exit_code range %s will match on all exit codes" % code_range)
                 self.stdio_exit_codes.append(exit_code)
         except Exception:
-            log.error("Exception in parse_stdio_exit_codes! " +
-                      str(sys.exc_info()))
-            trace = sys.exc_info()[2]
-            if trace is not None:
-                trace_msg = repr(traceback.format_tb(trace))
-                log.error("Traceback: %s" % trace_msg)
+            log.exception("Exception in parse_stdio_exit_codes!")
 
     def parse_stdio_regexes(self, stdio_elem):
         """
@@ -955,12 +999,7 @@ class StdioParser(object):
                         regex.stderr_match = True
                 self.stdio_regexes.append(regex)
         except Exception:
-            log.error("Exception in parse_stdio_exit_codes! " +
-                      str(sys.exc_info()))
-            trace = sys.exc_info()[2]
-            if trace is not None:
-                trace_msg = repr(traceback.format_tb(trace))
-                log.error("Traceback: %s" % trace_msg)
+            log.exception("Exception in parse_stdio_exit_codes!")
 
     # TODO: This method doesn't have to be part of the Tool class.
     def parse_error_level(self, err_level):
@@ -985,12 +1024,7 @@ class StdioParser(object):
                     log.debug("Tool %s: error level %s did not match log/warning/fatal" %
                               (self.id, err_level))
         except Exception:
-            log.error("Exception in parse_error_level " +
-                      str(sys.exc_info()))
-            trace = sys.exc_info()[2]
-            if trace is not None:
-                trace_msg = repr(traceback.format_tb(trace))
-                log.error("Traceback: %s" % trace_msg)
+            log.exception("Exception in parse_error_level")
         return return_level
 
 
@@ -1003,7 +1037,7 @@ class XmlPagesSource(PagesSource):
             pages_elem = self.input_elem.findall("page")
             for page in (pages_elem or [self.input_elem]):
                 page_sources.append(XmlPageSource(page))
-        super(XmlPagesSource, self).__init__(page_sources)
+        super().__init__(page_sources)
 
     @property
     def inputs_defined(self):
@@ -1067,14 +1101,14 @@ class XmlInputSource(InputSource):
     def parse_static_options(self):
         static_options = list()
         elem = self.input_elem
-        for index, option in enumerate(elem.findall("option")):
+        for option in elem.findall("option"):
             value = option.get("value")
             selected = string_as_bool(option.get("selected", False))
             static_options.append((option.text or value, value, selected))
         return static_options
 
     def parse_optional(self, default=None):
-        """ Return boolean indicating wheter parameter is optional. """
+        """ Return boolean indicating whether parameter is optional. """
         elem = self.input_elem
         if self.get('type') == "data_column":
             # Allow specifing force_select for backward compat., but probably
@@ -1120,7 +1154,7 @@ class XmlInputSource(InputSource):
         return sources
 
 
-class ParallelismInfo(object):
+class ParallelismInfo:
     """
     Stores the information (if any) for running multiple instances of the tool in parallel
     on the same set of inputs.

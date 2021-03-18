@@ -1,4 +1,7 @@
-from tempfile import NamedTemporaryFile
+import errno
+import tempfile
+
+import pytest
 
 from galaxy import util
 
@@ -18,24 +21,13 @@ def test_strip_control_characters():
     assert util.strip_control_characters(s) == 'bla'
 
 
-def test_strip_control_characters_nested():
-    s = '\x00bla'
-    stripped_s = 'bla'
-    l = [s]
-    t = (s, 'blub')
-    d = {42: s}
-    assert util.strip_control_characters_nested(l)[0] == stripped_s
-    assert util.strip_control_characters_nested(t)[0] == stripped_s
-    assert util.strip_control_characters_nested(d)[42] == stripped_s
-
-
 def test_parse_xml_string():
     section = util.parse_xml_string(SECTION_XML)
     _verify_section(section)
 
 
 def test_parse_xml_file():
-    with NamedTemporaryFile(mode='w') as tmp:
+    with tempfile.NamedTemporaryFile(mode='w') as tmp:
         tmp.write(SECTION_XML)
         tmp.flush()
         section = util.parse_xml(tmp.name).getroot()
@@ -69,3 +61,20 @@ def test_xml_to_string_pretty():
     </tool>
 </section>"""
     assert s == PRETTY
+
+
+def test_parse_xml_enoent():
+    with tempfile.NamedTemporaryFile() as temp:
+        path = temp.name
+    with pytest.raises(IOError) as excinfo:
+        util.parse_xml(path)
+    assert excinfo.value.errno == errno.ENOENT
+
+
+def test_clean_multiline_string():
+    x = util.clean_multiline_string("""
+        a
+        b
+        c
+""")
+    assert x == "a\nb\nc\n"

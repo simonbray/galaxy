@@ -2,10 +2,9 @@ import errno
 import json
 import logging
 import os
-from collections import OrderedDict
+from urllib.parse import urljoin
 
 from routes import url_for
-from six.moves.urllib.parse import urljoin
 
 from galaxy import util
 from galaxy.util.tool_shed import encoding_util, xml_util
@@ -13,10 +12,11 @@ from galaxy.util.tool_shed import encoding_util, xml_util
 log = logging.getLogger(__name__)
 
 REPOSITORY_OWNER = 'devteam'
-TOOL_MIGRATION_SCRIPTS_DIR = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), os.pardir, 'galaxy_install', 'migrate', 'scripts'))
-TOOL_MIGRATION_VERSIONS_DIR = os.path.abspath(os.path.join(
-    os.path.dirname(__file__), os.pardir, 'galaxy_install', 'migrate', 'versions'))
+# not valid for installed Galaxy, fix
+MIGRATE_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), os.pardir, os.pardir, os.pardir, 'galaxy', 'tool_shed', 'galaxy_install', 'migrate'))
+TOOL_MIGRATION_SCRIPTS_DIR = os.path.join(MIGRATE_DIR, 'scripts')
+TOOL_MIGRATION_VERSIONS_DIR = os.path.join(MIGRATE_DIR, 'versions')
 
 
 def accumulate_tool_dependencies(tool_shed_accessible, tool_dependencies, all_tool_dependencies):
@@ -35,16 +35,16 @@ def check_for_missing_tools(app, tool_panel_configs, latest_tool_migration_scrip
                                                        'migrate', 'scripts',
                                                        '%04d_tools.xml' % latest_tool_migration_script_number))
     # Parse the XML and load the file attributes for later checking against the proprietary tool_panel_config.
-    migrated_tool_configs_dict = OrderedDict()
+    migrated_tool_configs_dict = {}
     tree, error_message = xml_util.parse_xml(tools_xml_file_path)
     if tree is None:
-        return False, OrderedDict()
+        return False, {}
     root = tree.getroot()
     tool_shed = root.get('name')
     tool_shed_url = get_tool_shed_url_from_tool_shed_registry(app, tool_shed)
     # The default behavior is that the tool shed is down.
     tool_shed_accessible = False
-    missing_tool_configs_dict = OrderedDict()
+    missing_tool_configs_dict = {}
     if tool_shed_url:
         for elem in root:
             if elem.tag == 'repository':
@@ -102,7 +102,7 @@ def check_for_missing_tools(app, tool_panel_configs, latest_tool_migration_scrip
                                 if section_elem.tag == 'tool':
                                     missing_tool_configs_dict = check_tool_tag_set(section_elem, migrated_tool_configs_dict, missing_tool_configs_dict)
     else:
-        exception_msg = '\n\nThe entry for the main Galaxy tool shed at %s is missing from the %s file.  ' % (tool_shed, app.config.tool_sheds_config)
+        exception_msg = f'\n\nThe entry for the main Galaxy tool shed at {tool_shed} is missing from the {app.config.tool_sheds_config} file.  '
         exception_msg += 'The entry for this tool shed must always be available in this file, so re-add it before attempting to start your Galaxy server.\n'
         raise Exception(exception_msg)
     return tool_shed_accessible, missing_tool_configs_dict
@@ -130,9 +130,9 @@ def generate_clone_url_for_repository_in_tool_shed(user, repository):
     if user:
         protocol, base = base_url.split('://')
         username = '%s@' % user.username
-        return '%s://%s%s/repos/%s/%s' % (protocol, username, base, repository.user.username, repository.name)
+        return f'{protocol}://{username}{base}/repos/{repository.user.username}/{repository.name}'
     else:
-        return '%s/repos/%s/%s' % (base_url, repository.user.username, repository.name)
+        return f'{base_url}/repos/{repository.user.username}/{repository.name}'
 
 
 def generate_clone_url_from_repo_info_tup(app, repo_info_tup):
@@ -153,10 +153,10 @@ def get_non_shed_tool_panel_configs(app):
         # <toolbox tool_path="database/shed_tools">
         try:
             tree, error_message = xml_util.parse_xml(config_filename)
-        except (OSError, IOError) as exc:
-            if (config_filename == app.config.shed_tool_conf and not
-                    app.config.shed_tool_conf_set and
-                    exc.errno == errno.ENOENT):
+        except OSError as exc:
+            if (config_filename == app.config.shed_tool_conf
+                    and not app.config.shed_tool_conf_set
+                    and exc.errno == errno.ENOENT):
                 continue
             raise
         if tree is None:
@@ -174,7 +174,7 @@ def get_repository_dependencies(app, tool_shed_url, repository_name, repository_
     params = dict(name=repository_name, owner=repository_owner, changeset_revision=changeset_revision)
     pathspec = ['repository', 'get_repository_dependencies']
     try:
-        raw_text = util.url_get(tool_shed_url, password_mgr=app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
+        raw_text = util.url_get(tool_shed_url, auth=app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
         tool_shed_accessible = True
     except Exception as e:
         tool_shed_accessible = False
@@ -206,7 +206,7 @@ def get_tool_dependencies(app, tool_shed_url, repository_name, repository_owner,
     params = dict(name=repository_name, owner=repository_owner, changeset_revision=changeset_revision)
     pathspec = ['repository', 'get_tool_dependencies']
     try:
-        text = util.url_get(tool_shed_url, password_mgr=app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
+        text = util.url_get(tool_shed_url, auth=app.tool_shed_registry.url_auth(tool_shed_url), pathspec=pathspec, params=params)
         tool_shed_accessible = True
     except Exception as e:
         tool_shed_accessible = False
@@ -265,13 +265,13 @@ def get_tool_shed_repository_url(app, tool_shed, owner, name):
         # Append a slash to the tool shed URL, because urlparse.urljoin will eliminate
         # the last part of a URL if it does not end with a forward slash.
         tool_shed_url = '%s/' % tool_shed_url
-        return urljoin(tool_shed_url, 'view/%s/%s' % (owner, name))
+        return urljoin(tool_shed_url, f'view/{owner}/{name}')
     return tool_shed_url
 
 
 def get_user_by_username(app, username):
     """Get a user from the database by username."""
-    sa_session = app.model.context.current
+    sa_session = app.model.session
     try:
         user = sa_session.query(app.model.User) \
                          .filter(app.model.User.table.c.username == username) \
