@@ -401,7 +401,7 @@ class User(Dictifiable, RepresentById):
         extra_user_preferences = self.preferences.get('extra_user_preferences')
         if extra_user_preferences:
             try:
-                data = json.loads(extra_user_preferences)
+                data.update(json.loads(extra_user_preferences))
             except Exception:
                 pass
         return data
@@ -755,8 +755,11 @@ class Job(JobLike, UsesCreateAndUpdateTime, Dictifiable, RepresentById):
         self.state_history = []
         self.imported = False
         self.handler = None
+        self.create_time = None
         self.exit_code = None
+        self.history_id = None
         self.job_messages = None
+        self.update_time = None
         self._init_metrics()
         self.state_history.append(JobStateHistory(self))
 
@@ -3497,7 +3500,7 @@ class HistoryDatasetAssociation(DatasetInstance, HasTags, Dictifiable, UsesAnnot
                     continue
                 val = val.file_name
             # If no value for metadata, look in datatype for metadata.
-            elif val is None and hasattr(hda.datatype, name):
+            elif not hda.metadata.element_is_set(name) and hasattr(hda.datatype, name):
                 val = getattr(hda.datatype, name)
             rval['metadata_' + name] = val
         return rval
@@ -4992,6 +4995,8 @@ class Workflow(Dictifiable, RepresentById):
         copied_workflow.has_cycles = self.has_cycles
         copied_workflow.has_errors = self.has_errors
         copied_workflow.reports_config = self.reports_config
+        copied_workflow.license = self.license
+        copied_workflow.creator_metadata = self.creator_metadata
 
         # Map old step ids to new steps
         step_mapping = {}
@@ -5321,6 +5326,7 @@ class WorkflowInvocation(UsesCreateAndUpdateTime, Dictifiable, RepresentById):
         self.subworkflow_invocations = []
         self.step_states = []
         self.steps = []
+        self.workflow_id = None
 
     def create_subworkflow_invocation_for_step(self, step):
         assert step.type == "subworkflow"
@@ -5672,6 +5678,11 @@ class WorkflowInvocationStep(Dictifiable, RepresentById):
         SCHEDULED = 'scheduled'  # Workflow invocation step has been scheduled.
         # CANCELLED = 'cancelled',  TODO: implement and expose
         # FAILED = 'failed',  TODO: implement and expose
+
+    def __init__(self):
+        self.implicit_collection_jobs_id = None
+        self.job_id = None
+        self.workflow_invocation_id = None
 
     @property
     def is_new(self):
