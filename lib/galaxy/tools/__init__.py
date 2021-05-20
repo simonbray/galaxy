@@ -2844,7 +2844,7 @@ class ZipCollectionTool(DatabaseOperationTool):
         new_elements["reverse"] = reverse
         self._add_datasets_to_history(history, [forward, reverse])
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -2860,7 +2860,7 @@ class BuildListCollectionTool(DatabaseOperationTool):
 
         self._add_datasets_to_history(history, new_elements.values())
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -2974,7 +2974,7 @@ class MergeCollectionTool(DatabaseOperationTool):
 
         self._add_datasets_to_history(history, new_elements.values())
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3023,7 +3023,8 @@ class FilterDatasetsTool(DatabaseOperationTool):
         output_collections.create_collection(
             next(iter(self.outputs.values())),
             "output",
-            elements=new_elements
+            elements=new_elements,
+            propagate_hda_tags=False
         )
 
 
@@ -3060,14 +3061,14 @@ class FlattenTool(DatabaseOperationTool):
                 if dce.is_collection:
                     add_elements(dce_object, prefix=identifier)
                 else:
-                    copied_dataset = dce_object.copy(flush=False)
+                    copied_dataset = dce_object.copy(copy_tags=dce_object.tags, flush=False)
                     new_elements[identifier] = copied_dataset
                     copied_datasets.append(copied_dataset)
 
         add_elements(hdca.collection)
         self._add_datasets_to_history(history, copied_datasets)
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3111,7 +3112,7 @@ class SortTool(DatabaseOperationTool):
 
         self._add_datasets_to_history(history, new_elements.values())
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3163,7 +3164,7 @@ class RelabelFromFileTool(DatabaseOperationTool):
                 raise Exception("Invalid new colleciton identifier [%s]" % key)
         self._add_datasets_to_history(history, new_elements.values())
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3188,7 +3189,7 @@ class ApplyRulesTool(DatabaseOperationTool):
         )
         self._add_datasets_to_history(history, copied_datasets)
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", collection_type=rule_set.collection_type, elements=new_elements,
+            next(iter(self.outputs.values())), "output", collection_type=rule_set.collection_type, elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3249,7 +3250,7 @@ class TagFromFileTool(DatabaseOperationTool):
             add_copied_value_to_new_elements(new_tags_dict, dce)
         self._add_datasets_to_history(history, new_datasets)
         output_collections.create_collection(
-            next(iter(self.outputs.values())), "output", elements=new_elements
+            next(iter(self.outputs.values())), "output", elements=new_elements, propagate_hda_tags=False
         )
 
 
@@ -3286,11 +3287,11 @@ class FilterFromFileTool(DatabaseOperationTool):
 
         self._add_datasets_to_history(history, filtered_elements.values())
         output_collections.create_collection(
-            self.outputs["output_filtered"], "output_filtered", elements=filtered_elements
+            self.outputs["output_filtered"], "output_filtered", elements=filtered_elements, propagate_hda_tags=False
         )
         self._add_datasets_to_history(history, discarded_elements.values())
         output_collections.create_collection(
-            self.outputs["output_discarded"], "output_discarded", elements=discarded_elements
+            self.outputs["output_discarded"], "output_discarded", elements=discarded_elements, propagate_hda_tags=False
         )
 
 
