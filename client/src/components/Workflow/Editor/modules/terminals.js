@@ -40,7 +40,7 @@ const ANY_COLLECTION_TYPE_DESCRIPTION = {
 
 class ConnectionAcceptable {
     constructor(canAccept, reason) {
-        this.canAccept = canAccept;
+        this.canAccept = true;
         this.reason = reason;
     }
 }
