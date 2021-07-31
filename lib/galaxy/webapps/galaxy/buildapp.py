@@ -259,6 +259,11 @@ def populate_api_routes(webapp, app):
                           controller="datasets",
                           action="extra_files",
                           conditions=dict(method=["GET"]))
+    webapp.mapper.connect("history_contents_dependent_jobs",
+                          "/api/datasets/{history_content_id}/dependent_jobs",
+                          controller="datasets",
+                          action="dependent_jobs",
+                          conditions=dict(method=["GET"]))
     webapp.mapper.connect("history_content_as_text",
                           "/api/datasets/{dataset_id}/get_content_as_text",
                           controller="datasets",
@@ -319,6 +324,9 @@ def populate_api_routes(webapp, app):
                                     name_prefix="workflow_",
                                     path_prefix='/api/workflows/{workflow_id}')
     _add_item_provenance_controller(webapp,
+                                    name_prefix="history_content_",
+                                    path_prefix='/api/histories/{history_id}/contents/{history_content_id}')
+    _add_item_dependent_jobs_controller(webapp,
                                     name_prefix="history_content_",
                                     path_prefix='/api/histories/{history_id}/contents/{history_content_id}')
 
@@ -1224,6 +1232,12 @@ def _add_item_provenance_controller(webapp, name_prefix, path_prefix, **kwd):
     controller = "%sprovenance" % name_prefix
     name = "%sprovenance" % name_prefix
     webapp.mapper.resource(name, "provenance", path_prefix=path_prefix, controller=controller)
+
+
+def _add_item_dependent_jobs_controller(webapp, name_prefix, path_prefix, **kwd):
+    controller = "%sdependent_jobs" % name_prefix
+    name = "%sdependent_jobs" % name_prefix
+    webapp.mapper.resource(name, "dependent_jobs", path_prefix=path_prefix, controller=controller)
 
 
 def wrap_in_middleware(app, global_conf, application_stack, **local_conf):

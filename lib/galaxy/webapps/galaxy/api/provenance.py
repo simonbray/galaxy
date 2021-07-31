@@ -56,6 +56,20 @@ class BaseProvenanceController(BaseAPIController):
         return out
 
     def _get_record(self, trans, item, follow):
+        print(item.__dict__)
+        print(dir(item))
+        print(item.dependent_jobs.__dict__)
+        print(dir(item.dependent_jobs))
+        print(item.dependent_jobs)
+        # print(item._sa_instance_state.manager.dependent_jobs.__dict__)
+        # print(dir(item._sa_instance_state.manager.dependent_jobs))
+        # print(item._sa_instance_state.__dict__)
+        # print(item._sa_instance_state._class.__dict__)
+        # print(item._sa_instance_state.manager.__dict__)
+        # print(dir(item._sa_instance_state))
+        # # print(dir(item._sa_instance_state._class))
+        # print(dir(item._sa_instance_state.manager))
+        
         if item is not None:
             if item.copied_from_library_dataset_dataset_association:
                 item = item.copied_from_library_dataset_dataset_association
@@ -75,7 +89,7 @@ class BaseProvenanceController(BaseAPIController):
                     "id": trans.security.encode_id(item.id),
                     "uuid": (lambda uuid: str(uuid) if uuid else None)(item.dataset.uuid)
                 }
-        return None
+        # return {'test': 'test', 'item': item.__dict__}
 
     def _get_job_record(self, trans, job, follow):
         out = {}

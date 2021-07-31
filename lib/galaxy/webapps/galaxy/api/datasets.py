@@ -427,6 +427,28 @@ class DatasetsController(BaseAPIController, UsesVisualizationMixin):
             rval = "Could not get display data for dataset: %s" % util.unicodify(e)
         return rval
 
+    @web.expose_api_anonymous
+    def dependent_jobs(self, trans, history_content_id):
+        """
+        GET /api/datasets/{encoded_content_id}/dependent_jobs
+        Returns a list of jobs which depend on this history content (dataset)
+        """
+        decoded_content_id = self.decode_id(history_content_id)
+        rval = ''
+        try:
+            hda = self.hda_manager.get_accessible(decoded_content_id, trans.user)
+            # print(hda)
+            # print(hda.__dict__)
+            # print(dir(hda))
+            dependent_jobs = hda.dependent_jobs
+            return {'hello': True}
+        except Exception as e:
+            log.exception("Error finding jobs dependent on dataset (%s) from history (%s)",
+                          history_content_id, history_id)
+            trans.response.status = 500
+            rval = "Could not find jobs dependent on dataset: %s" % util.unicodify(e)
+        return rval
+
     @web.expose_api
     def get_content_as_text(self, trans, dataset_id):
         """ Returns item content as Text. """

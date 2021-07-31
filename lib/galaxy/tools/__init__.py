@@ -3021,6 +3021,14 @@ class FilterEmptyDatasetsTool(FilterDatasetsTool):
         return element.element_object.has_data()
 
 
+class FilterTaggedDatasetsTool(FilterDatasetsTool):
+    tool_type = 'filter_tagged_datasets_collection'
+    require_dataset_ok = False
+
+    def element_is_valid(self, element):
+        return tag in element.element_object.tags
+
+
 class FlattenTool(DatabaseOperationTool):
     tool_type = 'flatten_collection'
 
