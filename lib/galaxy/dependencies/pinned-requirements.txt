@@ -5,6 +5,7 @@ aiofiles==0.6.0
 amqp==5.0.6; python_version >= "3.6"
 appdirs==1.4.4; python_version >= "3.6"
 argcomplete==1.12.3; python_version >= "3.6" and python_version < "4"
+ase==3.22.0; python_version >= "3.6" and python_version < "4"
 async-exit-stack==1.0.1; python_version >= "3.6" and python_version < "3.7"
 async-generator==1.10; python_version >= "3.6" and python_version < "3.7"
 attmap==0.13.0
