@@ -60,6 +60,23 @@ class ToolFormTestCase(SeleniumTestCase, UsesHistoryItemAssertions):
             assert name_found
             assert format_found
 
+            job_outputs = self._table_to_key_value_elements("table#job-outputs")
+            assert job_outputs[0][0].text == 'environment_variables'
+            assert "View data\nEdit attributes\nDelete" in job_outputs[0][1].text
+            job_outputs[0][1].click()
+            assert job_outputs[0][1].find_element_by_css_selector('pre').text == '42\nmoo\nNOTTHREE'
+            dataset_operations = self.wait_for_selector_visible("table#job-outputs div.dropdown")
+            dataset_operations.click()
+            menu = self.wait_for_selector_visible("table#job-outputs div.dropdown ul")
+            self.click_menu_item(menu, 'Run job again')
+        self.components.tool_form.execute.wait_for_visible()
+
+    @staticmethod
+    def click_menu_item(menu, text):
+        for element in menu.find_elements_by_css_selector('a'):
+            if element.text == text:
+                return element.click()
+
     def _table_to_key_value_elements(self, table_selector):
         tool_parameters_table = self.wait_for_selector_visible(table_selector)
         tbody_element = tool_parameters_table.find_element_by_css_selector("tbody")
@@ -359,6 +376,7 @@ https://raw.githubusercontent.com/jmchilton/galaxy/apply_rules_tutorials/test-da
         rule_builder.main_button_ok.wait_for_and_click()
         self.tool_form_execute()
         output_hid = example["output_hid"]
+        self.home()
         self.history_panel_wait_for_hid_ok(output_hid)
         output_hdca = self.dataset_populator.get_history_collection_details(history_id, hid=output_hid, wait=False)
         example["check"](output_hdca, self.dataset_populator)

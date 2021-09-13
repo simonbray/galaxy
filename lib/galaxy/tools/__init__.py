@@ -49,6 +49,7 @@ from galaxy.tool_util.parser import (
 from galaxy.tool_util.parser.xml import XmlPageSource
 from galaxy.tool_util.provided_metadata import parse_tool_provided_metadata
 from galaxy.tool_util.toolbox import BaseGalaxyToolBox
+from galaxy.tool_util.toolbox.views.sources import StaticToolBoxViewSources
 from galaxy.tools import expressions
 from galaxy.tools.actions import DefaultToolAction
 from galaxy.tools.actions.data_manager import DataManagerToolAction
@@ -279,10 +280,17 @@ class ToolBox(BaseGalaxyToolBox):
         # FIXME: ./
         if tool_root_dir == './tools':
             tool_root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'bundled'))
+        view_sources = StaticToolBoxViewSources(
+            view_directories=app.config.panel_views_dir,
+            view_dicts=app.config.panel_views,
+        )
+        default_panel_view = app.config.default_panel_view
         super().__init__(
             config_filenames=config_filenames,
             tool_root_dir=tool_root_dir,
             app=app,
+            view_sources=view_sources,
+            default_panel_view=default_panel_view,
             save_integrated_tool_panel=save_integrated_tool_panel,
         )
 
@@ -771,7 +779,7 @@ class Tool(Dictifiable):
         return self.app.job_config.get_destination(self.__get_job_tool_configuration(job_params=job_params).destination)
 
     def get_panel_section(self):
-        return self.app.toolbox.get_integrated_section_for_tool(self)
+        return self.app.toolbox.get_section_for_tool(self)
 
     def allow_user_access(self, user, attempting_access=True):
         """
@@ -824,9 +832,6 @@ class Tool(Dictifiable):
                 self.version = "1.0.0"
             else:
                 raise Exception(f"Missing tool 'version' for tool with id '{self.id}' at '{tool_source}'")
-
-        self.edam_operations = tool_source.parse_edam_operations()
-        self.edam_topics = tool_source.parse_edam_topics()
 
         # Support multi-byte tools
         self.is_multi_byte = tool_source.parse_is_multi_byte()
@@ -992,6 +997,23 @@ class Tool(Dictifiable):
             if legacy_biotools_ref is not None:
                 xrefs.append({"value": legacy_biotools_ref, "reftype": "bio.tools"})
         self.xrefs = xrefs
+
+        edam_operations = tool_source.parse_edam_operations()
+        edam_topics = tool_source.parse_edam_topics()
+        has_missing_data = len(edam_operations) == 0 or len(edam_topics) == 0
+        if has_missing_data:
+            biotools_reference = self.biotools_reference
+            if biotools_reference:
+                biotools_entry = self.app.biotools_metadata_source.get_biotools_metadata(biotools_reference)
+                if biotools_entry:
+                    edam_info = biotools_entry.edam_info
+                    if len(edam_operations) == 0:
+                        edam_operations = edam_info.edam_operations
+                    if len(edam_topics) == 0:
+                        edam_topics = edam_info.edam_topics
+
+        self.edam_operations = edam_operations
+        self.edam_topics = edam_topics
 
         self.__parse_trackster_conf(tool_source)
         # Record macro paths so we can reload a tool if any of its macro has changes

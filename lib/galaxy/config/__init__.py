@@ -566,6 +566,19 @@ class GalaxyAppConfiguration(BaseAppConfiguration, CommonConfigurationMixin):
         if string_as_bool(kwargs.get("override_tempdir", "True")):
             tempfile.tempdir = self.new_file_path
 
+    def config_value_for_host(self, config_option, host):
+        val = getattr(self, config_option)
+        if config_option in self.schema.per_host_options:
+            per_host_option = f"{config_option}_by_host"
+            if per_host_option in self.config_dict:
+                per_host = self.config_dict[per_host_option] or {}
+                for host_key, host_val in per_host.items():
+                    if host_key in host:
+                        val = host_val
+                        break
+
+        return val
+
     def _process_config(self, kwargs):
         # Backwards compatibility for names used in too many places to fix
         self.datatypes_config = self.datatypes_config_file
@@ -1155,12 +1168,14 @@ class ConfiguresGalaxyMixin:
 
     def _configure_toolbox(self):
         from galaxy import tools
+        from galaxy.tools.biotools import get_galaxy_biotools_metadata_source
         from galaxy.managers.citations import CitationsManager
         from galaxy.tool_util.deps import containers
         from galaxy.tool_util.deps.dependencies import AppInfo
         import galaxy.tools.search
 
         self.citations_manager = CitationsManager(self)
+        self.biotools_metadata_source = get_galaxy_biotools_metadata_source(self.config)
 
         from galaxy.managers.tools import DynamicToolManager
         self.dynamic_tools_manager = DynamicToolManager(self)
@@ -1208,8 +1223,8 @@ class ConfiguresGalaxyMixin:
                 for enabled_container_type in self.container_finder._enabled_container_types(destination.params):
                     container_types_to_destinations[enabled_container_type].append(destination)
         self.toolbox.dependency_manager.set_enabled_container_types(container_types_to_destinations)
-        self.toolbox.dependency_manager.resolver_classes.update(self.container_finder.container_registry.resolver_classes)
-        self.toolbox.dependency_manager.dependency_resolvers.extend(self.container_finder.container_registry.container_resolvers)
+        self.toolbox.dependency_manager.resolver_classes.update(self.container_finder.default_container_registry.resolver_classes)
+        self.toolbox.dependency_manager.dependency_resolvers.extend(self.container_finder.default_container_registry.container_resolvers)
 
     def _configure_tool_data_tables(self, from_shed_config):
         from galaxy.tools.data import ToolDataTableManager
