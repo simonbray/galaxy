@@ -32,7 +32,7 @@ class ToolTestCase(DrivenFunctionalTestCase):
             tool_id = self.tool_id
         assert tool_id
 
-        verify_tool(tool_id, self.galaxy_interactor, resource_parameters=resource_parameters, test_index=test_index, tool_version=tool_version, register_job_data=register_job_data)
+        verify_tool(tool_id, self.galaxy_interactor, resource_parameters=resource_parameters, test_index=test_index, tool_version=tool_version, register_job_data=register_job_data, no_history_cleanup=True)
 
 
 @nottest
