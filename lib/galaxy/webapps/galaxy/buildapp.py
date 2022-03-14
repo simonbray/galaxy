@@ -246,6 +246,7 @@ def app_pair(global_conf, load_app_kwds=None, wsgi_preflight=True, **kwargs):
     webapp.add_client_route("/workflows/list_published")
     webapp.add_client_route("/workflows/create")
     webapp.add_client_route("/workflows/run")
+    webapp.add_client_route("/workflows/rerun")
     webapp.add_client_route("/workflows/import")
     webapp.add_client_route("/workflows/trs_import")
     webapp.add_client_route("/workflows/trs_search")
@@ -1168,6 +1169,9 @@ def populate_api_routes(webapp, app):
     connect_invocation_endpoint("show_step", "/steps/{step_id}", action="invocation_step")
     connect_invocation_endpoint(
         "update_step", "/steps/{step_id}", action="update_invocation_step", conditions=dict(method=["PUT"])
+    )
+    connect_invocation_endpoint(
+        "build_for_rerun", "/build_for_rerun", action="invocation_build_for_rerun", conditions=dict(method=["GET"])
     )
 
     # ============================

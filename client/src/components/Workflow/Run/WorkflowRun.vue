@@ -77,6 +77,10 @@ export default {
             type: Boolean,
             default: false,
         },
+        invocationId: {
+            type: String,
+            required: false,
+        },
     },
     data() {
         return {
@@ -92,7 +96,7 @@ export default {
         };
     },
     created() {
-        getRunData(this.workflowId)
+        getRunData(this.workflowId, this.invocationId)
             .then((runData) => {
                 this.loading = false;
                 const model = new WorkflowRunModel(runData);

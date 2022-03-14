@@ -11,8 +11,12 @@ import { rethrowSimple } from "utils/simple-error";
  *
  * @param {String} workflowId - (Stored?) Workflow ID to fetch data for.
  */
-export async function getRunData(workflowId) {
-    const url = `${getAppRoot()}api/workflows/${workflowId}/download?style=run`;
+export async function getRunData(workflowId, invocationId) {
+    if (invocationId) {
+        var url = `${getAppRoot()}api/invocations/${invocationId}/build_for_rerun`;
+    } else {
+        var url = `${getAppRoot()}api/workflows/${workflowId}/download?style=run`;
+    }
     try {
         const response = await axios.get(url);
         return response.data;

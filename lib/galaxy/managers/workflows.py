@@ -580,7 +580,7 @@ class WorkflowContentsManager(UsesAnnotations):
 
         return workflow, missing_tool_tups
 
-    def workflow_to_dict(self, trans, stored, style="export", version=None, history=None):
+    def workflow_to_dict(self, trans, stored, style="export", version=None, history=None, invocation=None):
         """Export the workflow contents to a dictionary ready for JSON-ification and to be
         sent out via API for instance. There are three styles of export allowed 'export', 'instance', and
         'editor'. The Galaxy team will do its best to preserve the backward compatibility of the
@@ -607,7 +607,9 @@ class WorkflowContentsManager(UsesAnnotations):
         elif style == "instance":
             wf_dict = self._workflow_to_dict_instance(stored, workflow=workflow, legacy=False)
         elif style == "run":
-            wf_dict = self._workflow_to_dict_run(trans, stored, workflow=workflow, history=history or trans.history)
+            wf_dict = self._workflow_to_dict_run(
+                trans, stored, workflow=workflow, history=history or trans.history, invocation=invocation
+            )
         elif style == "preview":
             wf_dict = self._workflow_to_dict_preview(trans, workflow=workflow)
         elif style == "format2":
@@ -638,7 +640,7 @@ class WorkflowContentsManager(UsesAnnotations):
                 wf_dict = from_galaxy_native(wf_dict, None, json_wrapper=True)
                 f.write(wf_dict["yaml_content"])
 
-    def _workflow_to_dict_run(self, trans, stored, workflow, history=None):
+    def _workflow_to_dict_run(self, trans, stored, workflow, history=None, invocation=None):
         """
         Builds workflow dictionary used by run workflow form
         """
@@ -652,6 +654,13 @@ class WorkflowContentsManager(UsesAnnotations):
         step_version_changes = []
         missing_tools = []
         errors = {}
+
+        if invocation:
+            invocation_steps = {index: step for index, step in enumerate(invocation.steps)}
+            workflow_steps = {index: step.workflow_step for index, step in invocation_steps.items()}
+        else:
+            workflow_steps = {index: step for index, step in enumerate(workflow.steps)}
+
         for step in workflow.steps:
             try:
                 module_injector.inject(step, steps=workflow.steps, exact_tools=False)
@@ -673,10 +682,12 @@ class WorkflowContentsManager(UsesAnnotations):
             raise exceptions.MessageException(f"Following tools missing: {', '.join(missing_tools)}")
         workflow.annotation = self.get_item_annotation_str(trans.sa_session, trans.user, workflow)
         step_order_indices = {}
-        for step in workflow.steps:
+        for step_index in workflow_steps:
+            step = workflow_steps[step_index]
             step_order_indices[step.id] = step.order_index
         step_models = []
-        for step in workflow.steps:
+        for step_index in workflow_steps:
+            step = workflow_steps[step_index]
             step_model = None
             if step.type == "tool":
                 incoming: Dict[str, Any] = {}
@@ -684,8 +695,16 @@ class WorkflowContentsManager(UsesAnnotations):
                     step.tool_id, tool_version=step.tool_version, tool_uuid=step.tool_uuid
                 )
                 params_to_incoming(incoming, tool.inputs, step.state.inputs, trans.app)
+                if invocation:
+                    job = invocation_steps[step_index].job
+                else:
+                    job = None
                 step_model = tool.to_json(
-                    trans, incoming, workflow_building_mode=workflow_building_modes.USE_HISTORY, history=history
+                    trans,
+                    incoming,
+                    workflow_building_mode=workflow_building_modes.USE_HISTORY,
+                    history=history,
+                    job=job,
                 )
                 step_model["post_job_actions"] = [
                     {
@@ -699,6 +718,58 @@ class WorkflowContentsManager(UsesAnnotations):
             else:
                 inputs = step.module.get_runtime_inputs(connections=step.output_connections)
                 step_model = {"inputs": [input.to_dict(trans) for input in inputs.values()]}
+
+            if invocation:  # overwrite step_model with parameters from the invocation, if rerunning
+                for input_dataset in invocation.input_datasets:
+                    if input_dataset.workflow_step.id == step.id:
+                        value = {
+                            "id": trans.security.encode_id(input_dataset.dataset_id),
+                            "hid": input_dataset.dataset.hid if input_dataset.dataset.hid is not None else -1,
+                            "name": f"{input_dataset.dataset.name}{' (not in current history)' if history not in (input_dataset.dataset.history, None) else ''}",
+                            "tags": [
+                                t.user_tname if not t.value else f"{t.user_tname}:{t.value}"
+                                for t in input_dataset.dataset.tags
+                            ],
+                            "src": "hda",
+                            "keep": False,
+                        }
+                        step_model["inputs"][0]["value"] = {
+                            "values": [value]
+                        }  # multiple values are not possible for invocations
+                        step_model["inputs"][0]["options"]["hda"].insert(0, value)
+                        for option in step_model["inputs"][0]["options"]["hda"][1:]:
+                            # delete duplicated options
+                            if option["id"] == value["id"]:
+                                del option
+
+                for input_dataset_collection in invocation.input_dataset_collections:
+                    if input_dataset_collection.workflow_step.id == step.id:
+                        value = {
+                            "id": trans.security.encode_id(input_dataset_collection.dataset_collection_id),
+                            "hid": input_dataset_collection.dataset_collection.hid
+                            if input_dataset_collection.dataset_collection.hid is not None
+                            else -1,
+                            "name": f"{input_dataset_collection.dataset_collection.name}{' (not in current history)' if history not in (input_dataset_collection.dataset_collection.history, None) else ''}",
+                            "tags": [
+                                t.user_tname if not t.value else f"{t.user_tname}:{t.value}"
+                                for t in input_dataset_collection.dataset_collection.tags
+                            ],
+                            "src": "hdca",
+                            "keep": False,
+                        }
+                        step_model["inputs"][0]["value"] = {
+                            "values": [value]
+                        }  # multiple values are not possible for invocations
+                        step_model["inputs"][0]["options"]["hdca"].insert(0, value)
+                        for option in step_model["inputs"][0]["options"]["hdca"][1:]:
+                            # delete duplicated options
+                            if option["id"] == value["id"]:
+                                del option
+
+                for parameter in invocation.input_step_parameters:
+                    if parameter.workflow_step.id == step.id:
+                        step_model["inputs"][0]["value"] = parameter.parameter_value
+
             step_model["replacement_parameters"] = step.module.get_replacement_parameters(step)
             step_model["step_type"] = step.type
             step_model["step_label"] = step.label

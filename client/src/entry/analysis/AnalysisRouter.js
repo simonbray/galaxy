@@ -83,6 +83,7 @@ export const getAnalysisRouter = (Galaxy) => {
             "(/)workflows/trs_import": "show_workflows_trs_import",
             "(/)workflows/trs_search": "show_workflows_trs_search",
             "(/)workflows/run(/)": "show_workflows_run",
+            "(/)workflows/rerun(/)": "show_workflows_rerun",
             "(/)workflows(/)list": "show_workflows",
             "(/)workflows/invocations": "show_workflow_invocations",
             "(/)workflows/invocations/report": "show_workflow_invocation_report",
@@ -351,7 +352,11 @@ export const getAnalysisRouter = (Galaxy) => {
         },
 
         show_workflows_run: function () {
-            this._loadWorkflow();
+            this._loadWorkflow(false);
+        },
+
+        show_workflows_rerun: function () {
+            this._loadWorkflow(true);
         },
 
         show_workflows_import: function () {
@@ -428,7 +433,7 @@ export const getAnalysisRouter = (Galaxy) => {
             } else {
                 // show the workflow run form
                 if (params.workflow_id) {
-                    this._loadWorkflow();
+                    this._loadWorkflow(false);
                     // load the center iframe with controller.action: galaxy.org/?m_c=history&m_a=list -> history/list
                 } else if (params.m_c) {
                     this._loadCenterIframe(`${params.m_c}/${params.m_a}`);
@@ -473,8 +478,15 @@ export const getAnalysisRouter = (Galaxy) => {
         },
 
         /** load workflow by its url in run mode */
-        _loadWorkflow: function () {
-            const workflowId = QueryStringParsing.get("id");
+        _loadWorkflow: function (fromInvocation) {
+            if (fromInvocation) {
+                var workflowId = null;
+                var invocationId = QueryStringParsing.get("id");
+            } else {
+                var workflowId = QueryStringParsing.get("id");
+                var invocationId = null;
+            }
+
             const Galaxy = getGalaxyInstance();
             let preferSimpleForm = Galaxy.config.simplified_workflow_run_ui == "prefer";
             const preferSimpleFormOverride = QueryStringParsing.get("simplified_workflow_run_ui");
@@ -488,6 +500,7 @@ export const getAnalysisRouter = (Galaxy) => {
                 preferSimpleForm,
                 simpleFormTargetHistory,
                 simpleFormUseJobCache,
+                invocationId,
             };
             this._display_vue_helper(WorkflowRun, props, "workflow");
         },

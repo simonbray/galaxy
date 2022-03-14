@@ -77,6 +77,14 @@
                     class="workflow-run btn-sm btn-primary fa fa-play"
                     @click.stop="executeWorkflow(getWorkflowByInstanceId(data.item.workflow_id).id)" />
             </template>
+            <template v-slot:cell(rerun)="data">
+                <b-button
+                    v-b-tooltip.hover.bottom
+                    id="rerun-workflow"
+                    title="Rerun Workflow"
+                    class="workflow-run btn-sm btn-primary fa fa-repeat"
+                    @click.stop="rerunInvocation(data.item.id)" />
+            </template>
         </b-table>
         <b-pagination
             v-model="currentPage"
@@ -115,6 +123,7 @@ export default {
             { key: "update_time", label: "Updated", class: "col-small", sortable: true },
             { key: "state", class: "col-small" },
             { key: "execute", label: "", class: "col-button" },
+            { key: "rerun", label: "", class: "col-button" },
         ];
         return {
             invocationItems: [],
@@ -178,6 +187,9 @@ export default {
         },
         executeWorkflow: function (workflowId) {
             window.location = `${getAppRoot()}workflows/run?id=${workflowId}`;
+        },
+        rerunInvocation: function (invocationId) {
+            window.location = `${getAppRoot()}workflows/rerun?id=${invocationId}`;
         },
         switchHistory(historyId) {
             const Galaxy = getGalaxyInstance();

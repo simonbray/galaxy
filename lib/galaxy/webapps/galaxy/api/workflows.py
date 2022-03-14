@@ -448,7 +448,11 @@ class WorkflowsAPIController(BaseGalaxyAPIController, UsesStoredWorkflowMixin, U
                 self.decode_id(history_id), trans.user, current_history=trans.history
             )
         ret_dict = self.workflow_contents_manager.workflow_to_dict(
-            trans, stored_workflow, style=style, version=version, history=history
+            trans,
+            stored_workflow,
+            style=style,
+            version=version,
+            history=history,
         )
         if download_format == "json-download":
             sname = stored_workflow.name
@@ -466,6 +470,41 @@ class WorkflowsAPIController(BaseGalaxyAPIController, UsesStoredWorkflowMixin, U
             return ordered_dump(ret_dict)
         else:
             return format_return_as_json(ret_dict, pretty=True)
+
+    @expose_api_raw_anonymous_and_sessionless
+    def invocation_build_for_rerun(self, trans: GalaxyWebTransaction, invocation_id, **kwd):
+        """
+        GET /api/invocations/{encoded_invocation_id}/build_for_rerun
+
+        Returns a workflow file formatted according to the 'run' export style, prepopulated with
+          inputs and parameters from a previous invocation. Note the result is heavily tied to the UI
+          (e.g. which history is currently being used).
+
+        :type   history_id: encoded history ID. If not supplied, defaults to current history.
+        :param  history_id: str
+        """
+
+        decoded_workflow_invocation_id = self.decode_id(invocation_id)
+        workflow_invocation = self.workflow_manager.get_invocation(trans, decoded_workflow_invocation_id, eager=True)
+        if not workflow_invocation:
+            return None
+
+        workflow = workflow_invocation.workflow
+
+        history_id = kwd.get("history_id")
+        history = None
+        if history_id:
+            history = self.history_manager.get_accessible(
+                self.decode_id(history_id), trans.user, current_history=trans.history
+            )
+        ret_dict = self.workflow_contents_manager._workflow_to_dict_run(
+            trans,
+            workflow.stored_workflow,
+            workflow,
+            history=history or trans.history,
+            invocation=workflow_invocation,
+        )
+        return format_return_as_json(ret_dict, pretty=True)
 
     @expose_api
     def delete(self, trans: ProvidesUserContext, id, **kwd):

@@ -1635,6 +1635,17 @@ test_data:
         run_test(NESTED_WORKFLOW_AUTO_LABELS_MODERN_SYNTAX)
 
     @skip_without_tool("cat1")
+    def test_invocation_build_for_rerun(self):
+        with self.dataset_populator.test_history() as history_id:
+            summary = self._run_workflow(WORKFLOW_SIMPLE, test_data={"input1": "hello world"}, history_id=history_id)
+            invocation_id = summary.invocation_id
+            invocation = self._get(f"invocations/{invocation_id}").json()
+            build_for_rerun = self._get(f"invocations/{invocation_id}/build_for_rerun").json()
+            assert (
+                build_for_rerun["steps"][0]["inputs"][0]["value"]["values"][0]["id"] == invocation["inputs"]["0"]["id"]
+            )
+
+    @skip_without_tool("cat1")
     @skip_without_tool("collection_paired_test")
     def test_workflow_run_zip_collections(self):
         with self.dataset_populator.test_history() as history_id:
