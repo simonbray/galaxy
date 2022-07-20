@@ -25,7 +25,7 @@ describe("WorkflowRerunButton.vue", () => {
     });
 
     it("should localize title text", async () => {
-        const selector = ROOT_COMPONENT.workflows.run_button({
+        const selector = ROOT_COMPONENT.workflows.rerun_button({
             workflowId: WORKFLOW_ID,
             invocationId: INVOCATION_ID,
         }).selector;

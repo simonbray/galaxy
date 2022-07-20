@@ -24,6 +24,7 @@ describe("WorkflowRunButton.vue", () => {
 
     it("should localize title text", async () => {
         const selector = ROOT_COMPONENT.workflows.run_button({ workflow_id: WORKFLOW_ID }).selector;
+        console.log(selector);
         expect(wrapper.find(selector).attributes("title")).toBeLocalizationOf("Run workflow");
     });
 });

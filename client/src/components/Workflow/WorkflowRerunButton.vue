@@ -2,7 +2,8 @@
     <b-button
         v-b-tooltip.hover.bottom
         :title="title | localize"
-        :data-workflow-run="workflowId"
+        :data-workflow-rerun="workflowId"
+        :data-invocation-rerun="invocationId"
         class="workflow-run btn-sm btn-primary fa fa-repeat"
         @click.stop="rerunInvocation" />
 </template>
