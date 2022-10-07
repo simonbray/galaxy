@@ -1,0 +1,21 @@
+<tool id="Filter1" name="Test" version="alpha">
+  <description>a test tool</description>
+  <edam_operations>
+    <edam_operation>operation_0335</edam_operation>
+  </edam_operations>
+  <command>
+	  cat 'test' > $out_file1
+  </command>
+  <inputs>
+  </inputs>
+  <outputs>
+    <data format_source="input" name="out_file1" metadata_source="input"/>
+  </outputs>
+  <help>
+
+.. class:: warningmark
+
+This is just a test tool.
+  </help>
+  <citations/>
+</tool>

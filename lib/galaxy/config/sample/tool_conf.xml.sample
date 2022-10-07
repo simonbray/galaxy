@@ -2,8 +2,8 @@
 <toolbox monitor="true">
   <section id="getext" name="Get Data">
     <tool file="data_source/upload.xml" />
-    <tool file="data_source/ucsc_tablebrowser.xml" />
-    <!-- <tool file="data_source/ucsc_tablebrowser_test.xml" /> -->
+    <!-- <tool file="data_source/ucsc_tablebrowser.xml" />
+     <tool file="data_source/ucsc_tablebrowser_test.xml" />
     <tool file="data_source/ucsc_tablebrowser_archaea.xml" />
     <tool file="data_source/ncbi_datasets.xml" />
     <tool file="data_source/sra.xml" />
@@ -11,22 +11,23 @@
     <tool file="data_source/fly_modencode.xml" />
     <tool file="data_source/intermine.xml" />
     <tool file="data_source/flymine.xml" />
-    <!-- <tool file="data_source/flymine_test.xml" /> -->
+     <tool file="data_source/flymine_test.xml" />
     <tool file="data_source/modmine.xml" />
     <tool file="data_source/mousemine.xml" />
     <tool file="data_source/ratmine.xml" />
     <tool file="data_source/yeastmine.xml" />
     <tool file="data_source/worm_modencode.xml" />
     <tool file="data_source/wormbase.xml" />
-    <!-- <tool file="data_source/wormbase_test.xml" /> -->
+    <tool file="data_source/wormbase_test.xml" /> 
     <tool file="data_source/zebrafishmine.xml" />
     <tool file="data_source/eupathdb.xml" />
-    <tool file="data_source/hbvar.xml" />
+    <tool file="data_source/hbvar.xml" /> -->
   </section>
+<!-- comment out for now, maybe useful later?
   <section id="send" name="Send Data">
     <tool file="data_export/send.xml" />
     <tool file="data_export/export_remote.xml" />
-  </section>
+</section> -->
   <section id="collection_operations" name="Collection Operations">
     <tool file="${model_tools_path}/unzip_collection.xml" />
     <tool file="${model_tools_path}/zip_collection.xml" />
@@ -46,9 +47,9 @@
   <section id="expression_tools" name="Expression Tools">
     <tool file="expression_tools/parse_values_from_file.xml"/>
   </section>
-  <section id="liftOver" name="Lift-Over">
+  <!-- <section id="liftOver" name="Lift-Over">
     <tool file="extract/liftOver_wrapper.xml" />
-  </section>
+  </section> -->
   <section id="textutil" name="Text Manipulation">
     <tool file="filters/fixedValueColumn.xml" />
     <tool file="filters/catWrapper.xml" />
@@ -68,31 +69,32 @@
     <tool file="filters/secure_hash_message_digest.xml" />
   </section>
   <section id="convert" name="Convert Formats">
-    <tool file="filters/bed2gff.xml" />
+    <!-- <tool file="filters/bed2gff.xml" />
     <tool file="filters/gff2bed.xml" />
     <tool file="maf/maf_to_bed.xml" />
     <tool file="maf/maf_to_interval.xml" />
     <tool file="maf/maf_to_fasta.xml" />
     <tool file="filters/sff_extractor.xml" />
     <tool file="filters/wig_to_bigwig.xml" />
-    <tool file="filters/bed_to_bigbed.xml" />
+    <tool file="filters/bed_to_bigbed.xml" /> -->
   </section>
   <section id="filter" name="Filter and Sort">
     <tool file="stats/filtering.xml" />
     <tool file="filters/sorter.xml" />
     <tool file="filters/grep.xml" />
     <tool file="filters/grep_1.0.1.xml"/>
-    <label id="gff" text="GFF" />
+    <!-- <label id="gff" text="GFF" />
     <tool file="filters/gff/extract_GFF_Features.xml" />
     <tool file="filters/gff/gff_filter_by_attribute.xml" />
     <tool file="filters/gff/gff_filter_by_feature_count.xml" />
-    <tool file="filters/gff/gtf_filter_by_attribute_values_list.xml" />
+    <tool file="filters/gff/gtf_filter_by_attribute_values_list.xml" /> -->
   </section>
   <section id="group" name="Join, Subtract and Group">
     <tool file="filters/joiner.xml" />
     <tool file="filters/compare.xml" />
     <tool file="stats/grouping.xml" />
   </section>
+  <!--
   <section id="fetchAlignSeq" name="Fetch Alignments/Sequences">
     <tool file="maf/interval2maf_pairwise.xml" />
     <tool file="maf/interval2maf.xml" />
@@ -111,12 +113,13 @@
     <tool file="filters/wiggle_to_simple.xml" />
     <tool file="stats/aggregate_binned_scores_in_intervals.xml" />
     <tool file="filters/ucsc_gene_bed_to_exon_bed.xml" />
-  </section>
+    </section>
+    -->
   <section id="stats" name="Statistics">
     <tool file="stats/gsummary.xml" />
     <tool file="filters/uniq.xml" />
   </section>
-  <section id="plots" name="Graph/Display Data">
+  <!--<section id="plots" name="Graph/Display Data">
     <tool file="maf/vcf_to_maf_customtrack.xml" />
   </section>
   <section id="hgv" name="Phenotype Association">
@@ -128,7 +131,7 @@
     <tool file="phenotype_association/ldtools.xml" />
     <tool file="phenotype_association/master2pg.xml" />
   </section>
-  <!--section id="interactivetools" name="Interactive tools">
+  <section id="interactivetools" name="Interactive tools">
     <tool file="interactive/codingSnps.xml" />
     <tool file="interactive/interactivetool_askomics.xml" />
     <tool file="interactive/interactivetool_bam_iobio.xml" />
@@ -139,4 +142,7 @@
     <tool file="interactive/interactivetool_neo4j.xml" />
     <tool file="interactive/interactivetool_phinch.xml" />
   </section-->
+  <section id="test" name="Test">
+    <tool file="tools/test/test1.xml" />
+  </section>
 </toolbox>
